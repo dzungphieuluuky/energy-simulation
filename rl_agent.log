@@ -1,0 +1,179 @@
+2025-10-28 15:21:05,721 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 15:21:05,863 - PLOAgent - INFO - No existing model found. Starting from scratch.
+2025-10-28 15:21:05,863 - PLOAgent - INFO - --- Starting Episode 1 ---
+2025-10-28 15:26:32,302 - PLOAgent - INFO - Episode 1 ended: Reward=-60973.97, AvgCostDrop=2.2961
+2025-10-28 15:26:32,302 - PLOAgent - INFO - Lambda values: drop: 10.0000, latency: 5.0000, resources: 0.5000
+2025-10-28 15:26:33,117 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_152632.pth
+2025-10-28 15:26:44,945 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 15:26:45,098 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_152632.pth. Loading...
+2025-10-28 15:26:45,368 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 1, Step 399
+2025-10-28 15:26:45,369 - PLOAgent - INFO - --- Starting Episode 2 ---
+2025-10-28 15:32:06,332 - PLOAgent - INFO - Episode 2 ended: Reward=-62215.25, AvgCostDrop=2.3014
+2025-10-28 15:32:06,333 - PLOAgent - INFO - Lambda values: drop: 14.8219, latency: 5.0000, resources: 0.5000
+2025-10-28 15:32:07,077 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_153206.pth
+2025-10-28 15:32:17,739 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 15:32:17,893 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_153206.pth. Loading...
+2025-10-28 15:32:18,139 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 2, Step 798
+2025-10-28 15:32:18,141 - PLOAgent - INFO - --- Starting Episode 3 ---
+2025-10-28 15:37:55,939 - PLOAgent - INFO - Episode 3 ended: Reward=-64822.69, AvgCostDrop=2.3798
+2025-10-28 15:37:55,940 - PLOAgent - INFO - Lambda values: drop: 19.6549, latency: 5.0000, resources: 0.5000
+2025-10-28 15:37:56,831 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_153756.pth
+2025-10-28 15:38:08,369 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 15:38:08,539 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_153756.pth. Loading...
+2025-10-28 15:38:08,803 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 3, Step 1197
+2025-10-28 15:38:08,804 - PLOAgent - INFO - --- Starting Episode 4 ---
+2025-10-28 15:43:55,231 - PLOAgent - INFO - Episode 4 ended: Reward=-66221.13, AvgCostDrop=2.4217
+2025-10-28 15:43:55,232 - PLOAgent - INFO - Lambda values: drop: 24.6526, latency: 5.0000, resources: 0.5000
+2025-10-28 15:43:56,104 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_154355.pth
+2025-10-28 15:44:06,382 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 15:44:06,555 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_154355.pth. Loading...
+2025-10-28 15:44:06,806 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 4, Step 1596
+2025-10-28 15:44:06,807 - PLOAgent - INFO - --- Starting Episode 5 ---
+2025-10-28 15:49:34,487 - PLOAgent - INFO - Episode 5 ended: Reward=-65968.22, AvgCostDrop=2.4018
+2025-10-28 15:49:34,487 - PLOAgent - INFO - Lambda values: drop: 29.7381, latency: 5.0000, resources: 0.5000
+2025-10-28 15:49:35,240 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_154935.pth
+2025-10-28 15:49:45,114 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 15:49:45,279 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_154935.pth. Loading...
+2025-10-28 15:49:45,539 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 5, Step 1995
+2025-10-28 15:49:45,542 - PLOAgent - INFO - --- Starting Episode 6 ---
+2025-10-28 15:56:04,086 - PLOAgent - INFO - Episode 6 ended: Reward=-63478.67, AvgCostDrop=2.3373
+2025-10-28 15:56:04,086 - PLOAgent - INFO - Lambda values: drop: 34.7820, latency: 5.0000, resources: 0.5000
+2025-10-28 15:56:04,847 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_155604.pth
+2025-10-28 15:56:16,289 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 15:56:16,483 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_155604.pth. Loading...
+2025-10-28 15:56:16,743 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 6, Step 2394
+2025-10-28 15:56:16,746 - PLOAgent - INFO - --- Starting Episode 7 ---
+2025-10-28 16:01:49,640 - PLOAgent - INFO - Episode 7 ended: Reward=-65767.85, AvgCostDrop=2.4061
+2025-10-28 16:01:49,640 - PLOAgent - INFO - Lambda values: drop: 39.6902, latency: 5.0000, resources: 0.5000
+2025-10-28 16:01:50,423 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_160150.pth
+2025-10-28 16:02:02,612 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:02:02,763 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_160150.pth. Loading...
+2025-10-28 16:02:02,955 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 7, Step 2793
+2025-10-28 16:02:02,958 - PLOAgent - INFO - --- Starting Episode 8 ---
+2025-10-28 16:07:03,977 - PLOAgent - INFO - Episode 8 ended: Reward=-68386.64, AvgCostDrop=2.4667
+2025-10-28 16:07:03,978 - PLOAgent - INFO - Lambda values: drop: 44.7431, latency: 5.0000, resources: 0.5000
+2025-10-28 16:07:04,762 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_160704.pth
+2025-10-28 16:07:16,391 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:07:16,519 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_160704.pth. Loading...
+2025-10-28 16:07:16,714 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 8, Step 3192
+2025-10-28 16:07:16,717 - PLOAgent - INFO - --- Starting Episode 9 ---
+2025-10-28 16:12:12,445 - PLOAgent - INFO - Episode 9 ended: Reward=-59844.97, AvgCostDrop=2.2788
+2025-10-28 16:12:12,446 - PLOAgent - INFO - Lambda values: drop: 49.9232, latency: 5.0000, resources: 0.5000
+2025-10-28 16:12:13,204 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_161213.pth
+2025-10-28 16:12:24,446 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:12:24,605 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_161213.pth. Loading...
+2025-10-28 16:12:24,819 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 9, Step 3591
+2025-10-28 16:12:24,820 - PLOAgent - INFO - --- Starting Episode 10 ---
+2025-10-28 16:17:24,092 - PLOAgent - INFO - Episode 10 ended: Reward=-64872.79, AvgCostDrop=2.3860
+2025-10-28 16:17:24,092 - PLOAgent - INFO - Lambda values: drop: 54.7086, latency: 5.0000, resources: 0.5000
+2025-10-28 16:17:24,620 - PLOAgent - INFO - Training constraint predictor at episode 10...
+2025-10-28 16:17:24,630 - PLOAgent - INFO - Constraint predictor trained with loss: 4.7444
+2025-10-28 16:17:24,857 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_161724.pth
+2025-10-28 16:17:34,459 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:17:34,599 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_161724.pth. Loading...
+2025-10-28 16:17:34,861 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 10, Step 3990
+2025-10-28 16:17:34,863 - PLOAgent - INFO - --- Starting Episode 11 ---
+2025-10-28 16:22:34,821 - PLOAgent - INFO - Episode 11 ended: Reward=-66663.96, AvgCostDrop=2.4035
+2025-10-28 16:22:34,822 - PLOAgent - INFO - Lambda values: drop: 59.7192, latency: 5.0000, resources: 0.5000
+2025-10-28 16:22:35,722 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_162235.pth
+2025-10-28 16:22:47,144 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:22:47,301 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_162235.pth. Loading...
+2025-10-28 16:22:47,534 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 11, Step 4389
+2025-10-28 16:22:47,537 - PLOAgent - INFO - --- Starting Episode 12 ---
+2025-10-28 16:28:23,528 - PLOAgent - INFO - Episode 12 ended: Reward=-65888.66, AvgCostDrop=2.4148
+2025-10-28 16:28:23,528 - PLOAgent - INFO - Lambda values: drop: 64.7665, latency: 5.0000, resources: 0.5000
+2025-10-28 16:28:24,258 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_162824.pth
+2025-10-28 16:28:35,337 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:28:35,479 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_162824.pth. Loading...
+2025-10-28 16:28:35,686 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 12, Step 4788
+2025-10-28 16:28:35,688 - PLOAgent - INFO - --- Starting Episode 13 ---
+2025-10-28 16:33:28,257 - PLOAgent - INFO - Episode 13 ended: Reward=-64938.83, AvgCostDrop=2.3853
+2025-10-28 16:33:28,258 - PLOAgent - INFO - Lambda values: drop: 69.8375, latency: 5.0000, resources: 0.5000
+2025-10-28 16:33:29,159 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_163328.pth
+2025-10-28 16:33:40,171 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:33:40,336 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_163328.pth. Loading...
+2025-10-28 16:33:40,587 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 13, Step 5187
+2025-10-28 16:33:40,589 - PLOAgent - INFO - --- Starting Episode 14 ---
+2025-10-28 16:39:36,895 - PLOAgent - INFO - Episode 14 ended: Reward=-65655.89, AvgCostDrop=2.3917
+2025-10-28 16:39:36,895 - PLOAgent - INFO - Lambda values: drop: 74.8467, latency: 5.0000, resources: 0.5000
+2025-10-28 16:39:37,681 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_163937.pth
+2025-10-28 16:39:48,863 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:39:48,998 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_163937.pth. Loading...
+2025-10-28 16:39:49,213 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 14, Step 5586
+2025-10-28 16:39:49,214 - PLOAgent - INFO - --- Starting Episode 15 ---
+2025-10-28 16:45:09,199 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:45:09,373 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_163937.pth. Loading...
+2025-10-28 16:45:09,612 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 14, Step 5586
+2025-10-28 16:45:09,613 - PLOAgent - INFO - --- Starting Episode 15 ---
+2025-10-28 16:45:24,536 - PLOAgent - INFO - Episode 15 ended: Reward=-66665.20, AvgCostDrop=2.4384
+2025-10-28 16:45:24,536 - PLOAgent - INFO - Lambda values: drop: 79.8691, latency: 5.0000, resources: 0.5000
+2025-10-28 16:45:25,359 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_164525.pth
+2025-10-28 16:45:34,626 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:45:34,773 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_164525.pth. Loading...
+2025-10-28 16:45:34,994 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 15, Step 5985
+2025-10-28 16:45:34,996 - PLOAgent - INFO - --- Starting Episode 16 ---
+2025-10-28 16:51:23,950 - PLOAgent - INFO - Episode 16 ended: Reward=-67596.17, AvgCostDrop=2.4295
+2025-10-28 16:51:23,951 - PLOAgent - INFO - Lambda values: drop: 84.9897, latency: 5.0000, resources: 0.5000
+2025-10-28 16:51:24,959 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_165124.pth
+2025-10-28 16:51:33,959 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:51:34,136 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_165124.pth. Loading...
+2025-10-28 16:51:34,377 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 16, Step 6384
+2025-10-28 16:51:34,379 - PLOAgent - INFO - --- Starting Episode 17 ---
+2025-10-28 16:52:01,143 - PLOAgent - INFO - Episode 15 ended: Reward=-45435.40, AvgCostDrop=2.0193
+2025-10-28 16:52:01,143 - PLOAgent - INFO - Lambda values: drop: 79.8691, latency: 5.0000, resources: 0.5000
+2025-10-28 16:52:02,122 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_165201.pth
+2025-10-28 16:52:02,344 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:52:02,417 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_165201.pth. Loading...
+2025-10-28 16:52:02,659 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 15, Step 5985
+2025-10-28 16:52:02,662 - PLOAgent - INFO - --- Starting Episode 16 ---
+2025-10-28 16:57:12,265 - PLOAgent - INFO - Episode 17 ended: Reward=-70734.91, AvgCostDrop=2.4905
+2025-10-28 16:57:12,265 - PLOAgent - INFO - Lambda values: drop: 90.0916, latency: 5.0000, resources: 0.5000
+2025-10-28 16:57:13,222 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_165712.pth
+2025-10-28 16:57:23,175 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:57:23,333 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_165712.pth. Loading...
+2025-10-28 16:57:23,569 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 17, Step 6783
+2025-10-28 16:57:23,570 - PLOAgent - INFO - --- Starting Episode 18 ---
+2025-10-28 16:58:44,405 - PLOAgent - INFO - Episode 16 ended: Reward=-59846.38, AvgCostDrop=2.2892
+2025-10-28 16:58:44,406 - PLOAgent - INFO - Lambda values: drop: 84.1096, latency: 5.0000, resources: 0.5000
+2025-10-28 16:58:45,231 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_165845.pth
+2025-10-28 16:58:45,702 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 16:58:45,762 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_165845.pth. Loading...
+2025-10-28 16:58:46,039 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 16, Step 6384
+2025-10-28 16:58:46,040 - PLOAgent - INFO - --- Starting Episode 17 ---
+2025-10-28 17:02:56,007 - PLOAgent - INFO - Episode 18 ended: Reward=-70783.90, AvgCostDrop=2.4740
+2025-10-28 17:02:56,008 - PLOAgent - INFO - Lambda values: drop: 95.3216, latency: 5.0000, resources: 0.5000
+2025-10-28 17:02:56,914 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_170256.pth
+2025-10-28 17:03:06,494 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 17:03:06,652 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_170256.pth. Loading...
+2025-10-28 17:03:06,904 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 18, Step 7182
+2025-10-28 17:03:06,905 - PLOAgent - INFO - --- Starting Episode 19 ---
+2025-10-28 17:04:31,445 - PLOAgent - INFO - Episode 17 ended: Reward=-67323.17, AvgCostDrop=2.4259
+2025-10-28 17:04:31,446 - PLOAgent - INFO - Lambda values: drop: 88.9169, latency: 5.0000, resources: 0.5000
+2025-10-28 17:04:32,305 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_170432.pth
+2025-10-28 17:04:32,499 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 17:04:32,555 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_170432.pth. Loading...
+2025-10-28 17:04:32,794 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 17, Step 6783
+2025-10-28 17:04:32,795 - PLOAgent - INFO - --- Starting Episode 18 ---
+2025-10-28 17:09:05,439 - PLOAgent - INFO - Episode 19 ended: Reward=-65500.60, AvgCostDrop=2.3958
+2025-10-28 17:09:05,440 - PLOAgent - INFO - Lambda values: drop: 100.0000, latency: 5.0000, resources: 0.5000
+2025-10-28 17:09:06,304 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_170906.pth
+2025-10-28 17:09:16,618 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 17:09:16,819 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_170906.pth. Loading...
+2025-10-28 17:09:17,111 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 19, Step 7581
+2025-10-28 17:09:17,112 - PLOAgent - INFO - --- Starting Episode 20 ---
+2025-10-28 17:14:37,681 - PLOAgent - INFO - Episode 18 ended: Reward=-46678.34, AvgCostDrop=2.1115
+2025-10-28 17:14:37,681 - PLOAgent - INFO - Lambda values: drop: 94.0113, latency: 5.0000, resources: 0.5000
+2025-10-28 17:14:38,559 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_171438.pth
+2025-10-28 17:14:39,128 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 17:14:39,201 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_171438.pth. Loading...
+2025-10-28 17:14:39,431 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 18, Step 7182
+2025-10-28 17:14:39,432 - PLOAgent - INFO - --- Starting Episode 19 ---
+2025-10-28 17:14:56,681 - PLOAgent - INFO - Episode 20 ended: Reward=-65183.67, AvgCostDrop=2.3979
+2025-10-28 17:14:56,682 - PLOAgent - INFO - Lambda values: drop: 100.0000, latency: 5.0000, resources: 0.5000
+2025-10-28 17:14:57,335 - PLOAgent - INFO - Training constraint predictor at episode 20...
+2025-10-28 17:14:57,345 - PLOAgent - INFO - Constraint predictor trained with loss: 3.2968
+2025-10-28 17:14:57,575 - PLOAgent - INFO - Model saved to plo_agent_model_high_speed_20251028_171457.pth
+2025-10-28 17:15:10,203 - PLOAgent - INFO - Refined PLO Agent initialized on device: cpu
+2025-10-28 17:15:10,364 - PLOAgent - INFO - Found latest model: plo_agent_model_high_speed_20251028_171457.pth. Loading...
+2025-10-28 17:15:10,597 - PLOAgent - INFO - Model loaded successfully. Resumed at Episode 20, Step 7980
+2025-10-28 17:15:10,599 - PLOAgent - INFO - --- Starting Episode 21 ---
