@@ -11,7 +11,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 import numpy as np
 
-from fiveg_env_chatgpt import FiveGEnv
+from fiveg_env import FiveGEnv
 from custom_models_sb3 import EnhancedAttentionNetwork
 
 class AlgorithmComparisonCallback(BaseCallback):

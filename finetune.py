@@ -9,7 +9,7 @@ from stable_baselines3.common.vec_env import VecNormalize, SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
 
 from train_with_model_selection import make_env_thunk
-from fiveg_env_chatgpt import FiveGEnv
+from fiveg_env import FiveGEnv
 from custom_models_sb3 import EnhancedAttentionNetwork
 
 def transfer_ppo_weights_to_sac(ppo_model: PPO, sac_model: SAC):

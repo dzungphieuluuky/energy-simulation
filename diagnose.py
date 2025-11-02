@@ -1,6 +1,6 @@
 import numpy as np
 import json
-from fiveg_env_chatgpt import FiveGEnv
+from fiveg_env import FiveGEnv
 if __name__ == "__main__":
     config = json.load(open("scenarios/dense_urban.json", 'r'))
     env = FiveGEnv(env_config=config, max_cells=57)

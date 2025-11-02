@@ -10,7 +10,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 import numpy as np
 
-from fiveg_env_chatgpt import FiveGEnv
+from fiveg_env import FiveGEnv
 from custom_models_sb3 import EnhancedAttentionNetwork
 
 def linear_schedule(initial_value: float) -> Callable[[float], float]:
