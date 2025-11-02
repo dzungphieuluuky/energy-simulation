@@ -155,7 +155,7 @@ if __name__ == "__main__":
     print(f"Max cells: {MAX_CELLS_SYSTEM_WIDE}, Parallel envs: {num_cpu}")
 
     # --- Load Scenarios ---
-    scenario_folder = "scenarios/"
+    scenario_folder = "/kaggle/input/my-energy-simulation/scenarios"
     scenario_files = [f for f in os.listdir(scenario_folder) if f.endswith('.json')]
     scenario_configs = []
     
@@ -198,7 +198,8 @@ if __name__ == "__main__":
     print(f"\nSelected algorithm: {algorithm.upper()}")
 
     # --- Training Setup ---
-    log_dir, model_dir = "sb3_logs/", "sb3_models/"
+    log_dir = "/kaggle/input/my-energy-simulation/sb3_logs/"
+    model_dir = "/kaggle/input/my-energy-simulation/sb3_models/"
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
@@ -277,10 +278,11 @@ if __name__ == "__main__":
     except ValueError:
         total_timesteps = 1_000_000
 
+    kaggle_save_path = "/kaggle/working/"
     run_name_prefix = f"{algorithm}_mixed_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
     checkpoint_callback = CheckpointCallback(
         save_freq=max(50000 // num_cpu, 1), 
-        save_path=model_dir, 
+        save_path=kaggle_save_path, 
         name_prefix=run_name_prefix, 
         verbose=1
     )
@@ -299,10 +301,10 @@ if __name__ == "__main__":
 
     # --- Save Final Model ---
     timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-    final_model_path = os.path.join(model_dir, f"{algorithm}_mixed_{timestamp}.zip")
+    final_model_path = os.path.join(kaggle_save_path, f"{algorithm}_mixed_{timestamp}.zip")
     model.save(final_model_path)
 
-    stats_path = os.path.join(model_dir, f"vec_normalize_{timestamp}.pkl")
+    stats_path = os.path.join(kaggle_save_path, f"vec_normalize_{timestamp}.pkl")
     env.save(stats_path)
     
     print(f"\n✅ Training complete!")
