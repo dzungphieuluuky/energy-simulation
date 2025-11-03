@@ -5,7 +5,7 @@ import os
 import pandas as pd
 from typing import Callable, List
 from stable_baselines3 import PPO, SAC, TD3, DDPG
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
@@ -13,29 +13,10 @@ import numpy as np
 
 from fiveg_env import FiveGEnv
 from custom_models_sb3 import EnhancedAttentionNetwork
+from callback import AlgorithmComparisonCallback, ConstraintMonitorCallback
 
-class AlgorithmComparisonCallback(BaseCallback):
-    """Callback to track training progress and compare algorithm performance."""
-    def __init__(self, verbose=0):
-        super().__init__(verbose)
-        self.episode_rewards = []
-        self.current_episode_reward = 0
-        
-    def _on_step(self) -> bool:
-        # Track episode rewards
-        if len(self.locals.get('rewards', [])) > 0:
-            self.current_episode_reward += sum(self.locals['rewards'])
-            
-        dones = self.locals.get('dones', [])
-        if any(dones):
-            self.episode_rewards.append(self.current_episode_reward)
-            self.current_episode_reward = 0
-            
-            if len(self.episode_rewards) % 10 == 0:
-                mean_reward = np.mean(self.episode_rewards[-10:])
-                print(f"Episode {len(self.episode_rewards)}, Last 10 eps mean reward: {mean_reward:.3f}")
-        
-        return True
+MAX_CELLS_SYSTEM_WIDE = 57
+STATE_DIM_PER_CELL = 25
 
 def linear_schedule(initial_value: float) -> Callable[[float], float]:
     """Linear learning rate schedule."""
@@ -65,11 +46,22 @@ def create_model(algorithm, env, policy_kwargs, device, learning_rate):
     
     elif algorithm.lower() == 'ppo':
         return PPO(
-            policy="MlpPolicy", env=env, policy_kwargs=policy_kwargs,
-            learning_rate=learning_rate, n_steps=2048, batch_size=64,
-            n_epochs=10, gamma=0.99, gae_lambda=0.95, clip_range=0.2,
-            ent_coef=0.01, vf_coef=0.5, verbose=1, 
-            tensorboard_log="sb3_logs/", device=device
+            "MlpPolicy",
+            env,
+            learning_rate=3e-4,      # Standard rate
+            n_steps=2048,            # Longer rollouts for better constraint learning
+            batch_size=64,           # Stable updates
+            n_epochs=10,             # Multiple passes over data
+            gamma=0.99,              # Value future constraints
+            gae_lambda=0.95,
+            clip_range=0.2,
+            clip_range_vf=0.5,
+            ent_coef=0.01,           # Moderate exploration
+            max_grad_norm=0.5,
+            verbose=1,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log="sb3_logs/",
+            device=device
         )
     
     elif algorithm.lower() == 'td3':
@@ -114,7 +106,7 @@ def benchmark_algorithms(config, max_cells, num_cpu, total_timesteps=50000):
             features_extractor_kwargs=dict(
                 features_dim=256,
                 max_cells=max_cells,
-                n_cell_features=25,
+                n_cell_features=MAX_CELLS_SYSTEM_WIDE,
             ),
         )
         
@@ -148,8 +140,7 @@ if __name__ == "__main__":
     
     # --- Configuration ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    MAX_CELLS_SYSTEM_WIDE = 57
-    num_cpu = 5
+    num_cpu = 10
     print(f"Using device: {device}")
     print(f"Max cells: {MAX_CELLS_SYSTEM_WIDE}, Parallel envs: {num_cpu}")
 
@@ -252,13 +243,14 @@ if __name__ == "__main__":
         env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
         
         policy_kwargs = dict(
-            features_extractor_class=EnhancedAttentionNetwork,
-            features_extractor_kwargs=dict(
-                features_dim=256,
-                max_cells=MAX_CELLS_SYSTEM_WIDE,
-                n_cell_features=25,
-            ),
-        )
+                features_extractor_class=EnhancedAttentionNetwork,
+                features_extractor_kwargs=dict(
+                    max_cells=MAX_CELLS_SYSTEM_WIDE,
+                    n_cell_features=MAX_CELLS_SYSTEM_WIDE,
+                    features_dim=256
+                ),
+                net_arch=dict(pi=[256, 256], vf=[256, 256])  # Deep networks
+                ),
         
         # Adjust learning rate based on algorithm
         if algorithm == 'sac':
@@ -270,7 +262,7 @@ if __name__ == "__main__":
             
         model = create_model(algorithm, env, policy_kwargs, device, linear_schedule(lr))
 
-    # --- Training ---
+    # --- Timesteps Selection ---
     total_timesteps_str = input(f"\nEnter total timesteps for {algorithm.upper()} (default 1,000,000): ").strip()
     try:
         total_timesteps = int(float(total_timesteps_str.replace(',', '')))
@@ -278,24 +270,37 @@ if __name__ == "__main__":
         total_timesteps = 1_000_000
 
     kaggle_save_path = "/kaggle/working/"
-    save_path = os.path.join(model_dir, 'checkpoints/')
-    os.makedirs(save_path, exist_ok=True)
     run_name_prefix = f"{algorithm}_mixed_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
+
+    # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
         save_freq=max(50000 // num_cpu, 1), 
-        save_path=save_path, 
+        save_path=model_dir, 
         name_prefix=run_name_prefix, 
+        run_name_prefix=run_name_prefix,
         verbose=1
     )
     progress_callback = AlgorithmComparisonCallback()
+
+    eval_callback = EvalCallback(
+        env,
+        best_model_save_path=model_dir + f"best_model_{algorithm}/",
+        log_path=log_dir,
+        eval_freq=5000,
+        deterministic=True,
+        render=False
+    )
+
+    monitor_callback = ConstraintMonitorCallback(verbose=1)
     
+    # --- Start Training ---
     print(f"\n{'='*60}")
     print(f"TRAINING {algorithm.upper()} FOR {total_timesteps:,} TIMESTEPS")
     print(f"{'='*60}")
     
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, progress_callback],
+        callback=[checkpoint_callback, monitor_callback, eval_callback, checkpoint_callback],
         progress_bar=True,
         reset_num_timesteps=not continue_training
     )

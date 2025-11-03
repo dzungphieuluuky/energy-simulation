@@ -224,30 +224,28 @@ class FiveGEnv(gym.Env):
     # Reset / step methods (merged behavior)
     # ------------------------------
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
-        super().reset(seed=seed)
+        """Enhanced reset that properly initializes tracking variables"""
+        result = super().reset(seed=seed)
         if seed is not None:
-            self.config['seed'] = int(seed)
-        np.random.seed(int(self.config.get('seed', 42)))
+            np.random.seed(seed)
+        
         self.current_step = 0
         self.total_energy_kwh = 0.0
-
-        self.qos_compliant_steps = 0 
-        self._prev_qos_violated = False
-
-        # Setup scenario
         self._setup_scenario()
-        active_powers = np.array([c.txPower for c in self.cells])
-        self.previous_powers = np.pad(active_powers, (0, self.max_cells - len(active_powers)), 'constant')
-        self.neighbor_measurements = np.full((self.n_ues, self.max_neighbors), -1, dtype=neighbor_dtype)
-
-        # run one simulation step (initialization) using default powers (action=None)
-        self.ues, self.cells, self.neighbor_measurements = optimized_run_simulation_step(
-            self.ues, self.cells, self.neighbor_measurements, self.config, self.time_step_duration, -1, action=None
+        
+        # Initialize tracking variables
+        self.qos_compliant_steps = 0
+        self.current_episode_reward = 0.0
+        current_powers = np.array([c.txPower for c in self.cells])
+        self.previous_powers = np.pad(current_powers, (0, self.max_cells - len(current_powers)), 'constant')
+        
+        if not hasattr(self, 'total_episodes'):
+            self.total_episodes = 0
+        
+        self.neighbor_measurements = np.full(
+            (self.n_ues, self.max_neighbors), -1, dtype=neighbor_dtype
         )
-        # accumulate initial energy (optional)
-        instantaneous_power = sum(c.energyConsumption for c in self.cells)
-        self.total_energy_kwh += (instantaneous_power / 1000.0) * (self.time_step_duration / 3600.0)
-
+        
         return self._get_obs(), {}
 
 # ------------------------
@@ -256,97 +254,116 @@ class FiveGEnv(gym.Env):
 
     def compute_smooth_reward(self, metrics):
         """
-        Constraint-prioritized reward function.
+        Hard-constraint reward function.
         
-        Key principle: QoS violations (drop rate, latency) MUST be avoided.
-        Energy efficiency is only rewarded when QoS is consistently maintained.
+        CRITICAL DESIGN:
+        1. QoS violations (drop rate > 1%, latency > 50ms) result in ONLY penalties
+        2. Connection rate below 95% results in ONLY penalties
+        3. Positive rewards are ONLY possible when ALL constraints are satisfied
+        4. Energy efficiency and other metrics only matter when constraints are met
         """
         
         # =================================================================
-        # 1. CRITICAL QOS METRICS - HIGHEST PRIORITY
+        # 1. EVALUATE ALL CONSTRAINTS (HARD REQUIREMENTS)
         # =================================================================
-        avg_drop = metrics.get("avgDropRate", 0.0)
-        avg_latency = metrics.get("avgLatency", 0.0)
-        
-        # Handle invalid values
-        avg_drop = max(0.0, avg_drop) if not np.isnan(avg_drop) else 0.0
-        avg_latency = max(0.0, avg_latency) if not np.isnan(avg_latency) else 0.0
-        
-        # Hard thresholds
-        drop_threshold = self.config['dropCallThreshold']  # 1%
-        latency_threshold = self.config['latencyThreshold']  # 50ms
-        
-        # Check if constraints are violated
-        drop_violated = avg_drop > drop_threshold
-        latency_violated = avg_latency > latency_threshold
-        
-        # Compute violation severity (how far beyond threshold)
-        if drop_violated:
-            drop_severity = (avg_drop - drop_threshold) / max(drop_threshold, 1e-6)
-        else:
-            drop_severity = 0.0
-        
-        if latency_violated:
-            latency_severity = (avg_latency - latency_threshold) / max(latency_threshold, 1e-6)
-        else:
-            latency_severity = 0.0
-        
-        # QoS scores (smooth functions)
-        # When below threshold: score approaches 1.0 as we get better
-        # When above threshold: score becomes negative based on severity
-        if not drop_violated:
-            # Reward being well below threshold
-            # 0% drop → 1.0, threshold → 0.5
-            drop_score = 0.5 + 0.5 * (1.0 - avg_drop / max(drop_threshold, 1e-6))
-        else:
-            # Heavy penalty for violations, exponentially growing
-            drop_score = -2.0 * (np.exp(drop_severity) - 1.0)
-        
-        if not latency_violated:
-            # 0ms → 1.0, threshold → 0.5
-            latency_score = 0.5 + 0.5 * (1.0 - avg_latency / max(latency_threshold, 1e-6))
-        else:
-            # Heavy penalty for violations
-            latency_score = -2.0 * (np.exp(latency_severity) - 1.0)
-        
-        if not drop_violated and not latency_violated:
-            self.qos_compliant_steps += 1
-        else:
-            self.qos_compliant_steps = 0  # Reset on any violation
-        
-        # =================================================================
-        # 2. CONNECTION RATE - CRITICAL FOR SERVICE
-        # =================================================================
+        avg_drop = max(0.0, metrics.get("avgDropRate", 0.0) if not np.isnan(metrics.get("avgDropRate", 0.0)) else 0.0)
+        avg_latency = max(0.0, metrics.get("avgLatency", 0.0) if not np.isnan(metrics.get("avgLatency", 0.0)) else 0.0)
         connected_ues = metrics.get("connectedUEs", 0)
         connection_rate = connected_ues / max(self.n_ues, 1)
         
-        # Very steep penalty for poor coverage
-        # 100% → 1.0, 95% → 0.5, 90% → 0.0, <90% → negative
-        if connection_rate >= 0.95:
-            connection_score = 0.5 + 0.5 * ((connection_rate - 0.95) / 0.05)
-        elif connection_rate >= 0.90:
-            connection_score = 0.5 * ((connection_rate - 0.90) / 0.05)
+        # Define thresholds
+        drop_threshold = self.config['dropCallThreshold']  # 1%
+        latency_threshold = self.config['latencyThreshold']  # 50ms
+        connection_threshold = 0.95  # 95% must be connected
+        
+        # Check constraint violations
+        drop_violated = avg_drop > drop_threshold
+        latency_violated = avg_latency > latency_threshold
+        connection_violated = connection_rate < connection_threshold
+        
+        # ANY violation means constraints are not satisfied
+        constraints_satisfied = not (drop_violated or latency_violated or connection_violated)
+        
+        # Track consecutive compliant steps
+        if not hasattr(self, 'qos_compliant_steps'):
+            self.qos_compliant_steps = 0
+        
+        if constraints_satisfied:
+            self.qos_compliant_steps += 1
         else:
-            # Heavy penalty below 90%
-            connection_score = -1.0 * (0.90 - connection_rate) / 0.90
+            self.qos_compliant_steps = 0
         
         # =================================================================
-        # 3. RESOURCE UTILIZATION - PREVENT OVERLOAD
+        # 2. COMPUTE CONSTRAINT PENALTY (if violated)
         # =================================================================
-        cpu_violations = metrics.get("cpuViolations", 0)
-        prb_violations = metrics.get("prbViolations", 0)
-        total_violations = cpu_violations + prb_violations
+        if not constraints_satisfied:
+            # Compute individual penalties based on severity
+            penalties = []
+            
+            if drop_violated:
+                severity = (avg_drop - drop_threshold) / max(drop_threshold, 1e-6)
+                drop_penalty = -5.0 * (1.0 + severity)  # Base -5, grows with severity
+                penalties.append(drop_penalty)
+            
+            if latency_violated:
+                severity = (avg_latency - latency_threshold) / max(latency_threshold, 1e-6)
+                latency_penalty = -5.0 * (1.0 + severity)
+                penalties.append(latency_penalty)
+            
+            if connection_violated:
+                gap = connection_threshold - connection_rate
+                connection_penalty = -10.0 * gap  # Very steep penalty
+                penalties.append(connection_penalty)
+            
+            # Total penalty is sum of all violations
+            total_penalty = sum(penalties)
+            
+            # Return ONLY penalty, no other rewards
+            return {
+                'reward': np.tanh(total_penalty / 10.0),  # Normalize to ~[-1, 0]
+                'constraints_satisfied': False,
+                'constraint_penalties': {
+                    'drop': drop_penalty if drop_violated else 0.0,
+                    'latency': latency_penalty if latency_violated else 0.0,
+                    'connection': connection_penalty if connection_violated else 0.0,
+                    'total': total_penalty
+                },
+                'components': {
+                    'drop_violated': drop_violated,
+                    'latency_violated': latency_violated,
+                    'connection_violated': connection_violated
+                },
+                'metrics': {
+                    'avg_drop_rate': avg_drop,
+                    'avg_latency': avg_latency,
+                    'connection_rate_pct': connection_rate * 100,
+                    'connected_ues': connected_ues,
+                    'total_ues': self.n_ues,
+                    'qos_compliant_steps': self.qos_compliant_steps
+                }
+            }
         
-        if self.n_cells > 0:
-            violation_rate = total_violations / self.n_cells
-            # Exponential penalty for resource violations
-            resource_score = np.exp(-3 * violation_rate)
-        else:
-            resource_score = 1.0
+        # =================================================================
+        # 3. CONSTRAINTS ARE SATISFIED - COMPUTE POSITIVE REWARDS
+        # =================================================================
         
-        # =================================================================
-        # 4. ENERGY EFFICIENCY - ONLY REWARDED WHEN QOS IS GOOD
-        # =================================================================
+        # 3.1 Base reward for maintaining constraints
+        base_constraint_reward = 1.0  # Fixed reward for being compliant
+        
+        # 3.2 QoS Quality (how far below thresholds)
+        # Better margin = higher reward
+        drop_margin = (drop_threshold - avg_drop) / max(drop_threshold, 1e-6)
+        drop_quality = np.clip(drop_margin, 0, 1)  # 0 at threshold, 1 at perfect
+        
+        latency_margin = (latency_threshold - avg_latency) / max(latency_threshold, 1e-6)
+        latency_quality = np.clip(latency_margin, 0, 1)
+        
+        connection_margin = (connection_rate - connection_threshold) / (1.0 - connection_threshold + 1e-6)
+        connection_quality = np.clip(connection_margin, 0, 1)
+        
+        qos_quality_reward = 0.5 * (drop_quality + latency_quality + connection_quality) / 3.0
+        
+        # 3.3 Energy Efficiency (main optimization objective)
         if self.n_cells > 0:
             max_power_per_cell = self.config['basePower'] + 10 ** ((self.config['maxTxPower'] - 30) / 10.0)
             max_possible_power = self.n_cells * max_power_per_cell
@@ -355,46 +372,46 @@ class FiveGEnv(gym.Env):
             energy_ratio = total_current_power / max(max_possible_power, 1e-6)
             energy_efficiency = 1.0 - energy_ratio
             
-            # Smooth sigmoid for energy
-            energy_score = 1.0 / (1.0 + np.exp(-10 * (energy_efficiency - 0.5)))
+            # Energy score only kicks in after sustained compliance
+            MIN_COMPLIANT_STEPS = 10
+            if self.qos_compliant_steps >= MIN_COMPLIANT_STEPS:
+                # Gradually unlock: 10 steps→25%, 20→50%, 40+→100%
+                unlock_ratio = min(1.0, (self.qos_compliant_steps - MIN_COMPLIANT_STEPS) / 30.0)
+                energy_reward = 2.0 * energy_efficiency * unlock_ratio
+            else:
+                energy_reward = 0.0
         else:
-            energy_score = 0.5
+            energy_reward = 0.0
             energy_efficiency = 0.0
         
-        # CRITICAL: Energy is only rewarded if QoS is maintained
-        # Require at least 5 consecutive compliant steps before energy matters
-        MIN_COMPLIANT_STEPS = 5
+        # 3.4 Resource Efficiency
+        cpu_violations = metrics.get("cpuViolations", 0)
+        prb_violations = metrics.get("prbViolations", 0)
         
-        if self.qos_compliant_steps >= MIN_COMPLIANT_STEPS:
-            # Gradually increase energy importance with more compliant steps
-            # 5 steps → 0.2×, 10 steps → 0.5×, 20 steps → 0.9×, 30+ steps → 1.0×
-            energy_multiplier = min(1.0, 0.2 + 0.8 * (self.qos_compliant_steps - MIN_COMPLIANT_STEPS) / 25.0)
-            effective_energy_score = energy_score * energy_multiplier
+        if self.n_cells > 0:
+            violation_rate = (cpu_violations + prb_violations) / self.n_cells
+            resource_reward = 0.3 * (1.0 - np.clip(violation_rate, 0, 1))
         else:
-            # No energy reward until QoS is stable
-            effective_energy_score = 0.0
+            resource_reward = 0.3
         
-        # =================================================================
-        # 5. SECONDARY METRICS (lower priority)
-        # =================================================================
-        
-        # Load balancing
+        # 3.5 Load Balancing
         loads = [c.currentLoad / max(c.maxCapacity, 1e-6) for c in self.cells if c.maxCapacity > 0]
         if len(loads) > 1:
-            load_variance = np.var(loads)
-            load_balance_score = np.exp(-10 * load_variance)
+            load_std = np.std(loads)
+            load_balance_reward = 0.2 * np.exp(-10 * load_std)
         else:
-            load_balance_score = 1.0
+            load_balance_reward = 0.2
         
-        # Signal quality
+        # 3.6 Signal Quality
         sinr_values = [ue.sinr for ue in self.ues if not np.isnan(ue.sinr) and ue.sinr > -100]
         if len(sinr_values) > 0:
             avg_sinr = np.mean(sinr_values)
-            sinr_score = 1.0 / (1.0 + np.exp(-0.2 * (avg_sinr - 10)))
+            sinr_normalized = (avg_sinr + 10) / 40  # -10dB to 30dB → 0 to 1
+            sinr_reward = 0.2 * np.clip(sinr_normalized, 0, 1)
         else:
-            sinr_score = 0.1 if self.n_ues > 0 else 0.5
+            sinr_reward = 0.0
         
-        # Power stability
+        # 3.7 Power Stability
         active_previous_powers = self.previous_powers[:self.n_cells]
         if hasattr(self, 'previous_powers') and len(active_previous_powers) == len(self.cells):
             power_changes = [abs(c.txPower - active_previous_powers[i]) for i, c in enumerate(self.cells)]
@@ -402,188 +419,100 @@ class FiveGEnv(gym.Env):
                 avg_change = np.mean(power_changes)
                 max_change = self.config['maxTxPower'] - self.config['minTxPower']
                 change_ratio = avg_change / max(max_change, 1e-6)
-                stability_score = np.exp(-change_ratio)
+                stability_reward = 0.1 * (1.0 - np.clip(change_ratio, 0, 1))
             else:
-                stability_score = 1.0
+                stability_reward = 0.1
         else:
-            stability_score = 1.0
+            stability_reward = 0.1
         
         # Update previous powers
         current_active_powers = np.array([c.txPower for c in self.cells])
         self.previous_powers = np.pad(current_active_powers, (0, self.max_cells - len(current_active_powers)), 'constant')
         
         # =================================================================
-        # 6. CONSTRAINT-PRIORITY WEIGHTING SYSTEM
+        # 4. COMBINE REWARDS (all components are positive)
         # =================================================================
-        if not hasattr(self, 'total_episodes'):
-            self.total_episodes = 0
-        
-        ep = self.total_episodes
-        
-        # Weights are HEAVILY skewed toward QoS constraints
-        # Energy only becomes significant after QoS is learned
-        
-        if ep < 100:
-            # Phase 1: Learn to maintain QoS at ANY energy cost
-            weights = {
-                'drop': 10.0,           # CRITICAL - highest priority
-                'latency': 10.0,        # CRITICAL - highest priority
-                'connection': 6.0,      # Very important
-                'resource': 2.0,        # Important
-                'energy': 0.0,          # ZERO - not considered yet
-                'load_balance': 0.3,    # Nice to have
-                'sinr': 0.2,            # Nice to have
-                'stability': 0.1        # Nice to have
-            }
-        elif ep < 300:
-            # Phase 2: Maintain QoS, start considering efficiency
-            weights = {
-                'drop': 8.0,            # Still critical
-                'latency': 8.0,         # Still critical
-                'connection': 5.0,      # Very important
-                'resource': 2.0,        # Important
-                'energy': 1.0,          # Small consideration (but multiplied by compliant steps)
-                'load_balance': 0.5,    
-                'sinr': 0.3,
-                'stability': 0.2
-            }
-        elif ep < 600:
-            # Phase 3: Balance QoS and efficiency
-            weights = {
-                'drop': 6.0,
-                'latency': 6.0,
-                'connection': 4.0,
-                'resource': 2.0,
-                'energy': 3.0,          # Moderate importance (when compliant)
-                'load_balance': 0.7,
-                'sinr': 0.4,
-                'stability': 0.3
-            }
-        else:
-            # Phase 4: Optimize efficiency while maintaining QoS
-            weights = {
-                'drop': 5.0,            # Still high
-                'latency': 5.0,         # Still high
-                'connection': 3.0,
-                'resource': 2.0,
-                'energy': 5.0,          # Equal to QoS (when compliant)
-                'load_balance': 0.8,
-                'sinr': 0.5,
-                'stability': 0.4
-            }
-        
-        # =================================================================
-        # 7. COMPOSITE REWARD WITH CONSTRAINT PRIORITY
-        # =================================================================
-        
-        # Base reward from all components
-        base_reward = (
-            weights['drop'] * drop_score +
-            weights['latency'] * latency_score +
-            weights['connection'] * connection_score +
-            weights['resource'] * resource_score +
-            weights['energy'] * effective_energy_score +  # Note: effective_energy_score
-            weights['load_balance'] * load_balance_score +
-            weights['sinr'] * sinr_score +
-            weights['stability'] * stability_score
+        total_reward = (
+            base_constraint_reward +      # 1.0
+            qos_quality_reward +           # up to 0.5
+            energy_reward +                # up to 2.0 (when unlocked)
+            resource_reward +              # up to 0.3
+            load_balance_reward +          # up to 0.2
+            sinr_reward +                  # up to 0.2
+            stability_reward               # up to 0.1
         )
+        # Theoretical max: 1.0 + 0.5 + 2.0 + 0.3 + 0.2 + 0.2 + 0.1 = 4.3
         
         # =================================================================
-        # 8. BONUSES - ONLY FOR SUSTAINED QOS COMPLIANCE
+        # 5. BONUS REWARDS FOR EXCELLENCE
         # =================================================================
         
-        # Streak bonus: reward for maintaining QoS over time
-        if self.qos_compliant_steps >= 10:
-            streak_multiplier = min(2.0, 1.0 + 0.1 * (self.qos_compliant_steps - 10) / 10.0)
-            streak_bonus = 1.0 * streak_multiplier
+        # Sustained compliance bonus
+        if self.qos_compliant_steps >= 50:
+            streak_bonus = 0.5 * min(1.0, self.qos_compliant_steps / 100.0)
         else:
             streak_bonus = 0.0
         
-        # Excellence bonus: all metrics good simultaneously
-        if (drop_score > 0.8 and latency_score > 0.8 and 
-            connection_score > 0.8 and resource_score > 0.9 and
-            self.qos_compliant_steps >= MIN_COMPLIANT_STEPS):
-            excellence_bonus = 2.0
-            
-            # Extra bonus for efficiency during excellence
-            if energy_score > 0.7:
-                excellence_bonus += 1.0
+        # High efficiency bonus (only after 20+ compliant steps)
+        if self.qos_compliant_steps >= 20 and energy_efficiency > 0.7:
+            efficiency_bonus = 0.5 * (energy_efficiency - 0.7) / 0.3
         else:
-            excellence_bonus = 0.0
+            efficiency_bonus = 0.0
         
-        reward = base_reward + streak_bonus + excellence_bonus
-        
-        # =================================================================
-        # 9. PENALTY MULTIPLIER FOR VIOLATIONS
-        # =================================================================
-        
-        # If BOTH drop and latency are violated, apply severe penalty
-        if drop_violated and latency_violated:
-            violation_penalty = -5.0 * (drop_severity + latency_severity)
-            reward += violation_penalty
-        elif drop_violated or latency_violated:
-            violation_penalty = -3.0 * max(drop_severity, latency_severity)
-            reward += violation_penalty
+        # Perfect performance bonus
+        if (drop_quality > 0.9 and latency_quality > 0.9 and 
+            connection_quality > 0.9 and self.qos_compliant_steps >= 30):
+            perfection_bonus = 1.0
         else:
-            violation_penalty = 0.0
+            perfection_bonus = 0.0
+        
+        total_reward += streak_bonus + efficiency_bonus + perfection_bonus
+        # Max with bonuses: 4.3 + 0.5 + 0.5 + 1.0 = 6.3
         
         # =================================================================
-        # 10. NORMALIZE AND SOFT CLIP
+        # 6. NORMALIZE TO [0, 1] RANGE
         # =================================================================
-        
-        # Normalize (max theoretical: ~28 + bonuses ~4 = 32)
-        reward = reward / 32.0
-        
-        # Soft clipping
-        reward = np.tanh(reward)
+        normalized_reward = total_reward / 6.5
+        normalized_reward = np.clip(normalized_reward, 0, 1)
         
         # =================================================================
-        # 11. DETAILED LOGGING
+        # 7. RETURN DETAILED INFORMATION
         # =================================================================
         return {
-            'reward': reward,
+            'reward': normalized_reward,
+            'constraints_satisfied': True,
+            'constraint_penalties': {
+                'drop': 0.0,
+                'latency': 0.0,
+                'connection': 0.0,
+                'total': 0.0
+            },
             'components': {
-                'connection_score': connection_score,
-                'drop_score': drop_score,
-                'latency_score': latency_score,
-                'resource_score': resource_score,
-                'energy_score': energy_score,
-                'effective_energy_score': effective_energy_score,
-                'load_balance_score': load_balance_score,
-                'sinr_score': sinr_score,
-                'stability_score': stability_score
+                'base_constraint_reward': base_constraint_reward,
+                'qos_quality_reward': qos_quality_reward,
+                'energy_reward': energy_reward,
+                'resource_reward': resource_reward,
+                'load_balance_reward': load_balance_reward,
+                'sinr_reward': sinr_reward,
+                'stability_reward': stability_reward,
+                'streak_bonus': streak_bonus,
+                'efficiency_bonus': efficiency_bonus,
+                'perfection_bonus': perfection_bonus
             },
-            'weighted': {
-                'w_connection': weights['connection'] * connection_score,
-                'w_drop': weights['drop'] * drop_score,
-                'w_latency': weights['latency'] * latency_score,
-                'w_resource': weights['resource'] * resource_score,
-                'w_energy': weights['energy'] * effective_energy_score,
-                'w_load_balance': weights['load_balance'] * load_balance_score,
-                'w_sinr': weights['sinr'] * sinr_score,
-                'w_stability': weights['stability'] * stability_score
-            },
-            'bonuses': {
-                'streak': streak_bonus,
-                'excellence': excellence_bonus
-            },
-            'constraints': {
-                'drop_violated': drop_violated,
-                'latency_violated': latency_violated,
-                'drop_severity': drop_severity,
-                'latency_severity': latency_severity,
-                'violation_penalty': violation_penalty if 'violation_penalty' in locals() else 0.0,
-                'qos_compliant_steps': self.qos_compliant_steps,
-                'energy_multiplier': energy_multiplier if self.qos_compliant_steps >= MIN_COMPLIANT_STEPS else 0.0
+            'quality_scores': {
+                'drop_quality': drop_quality,
+                'latency_quality': latency_quality,
+                'connection_quality': connection_quality,
+                'energy_efficiency': energy_efficiency
             },
             'metrics': {
+                'avg_drop_rate': avg_drop,
+                'avg_latency': avg_latency,
                 'connection_rate_pct': connection_rate * 100,
                 'connected_ues': connected_ues,
                 'total_ues': self.n_ues,
-                'avg_drop_rate': avg_drop,
-                'avg_latency': avg_latency,
-                'total_violations': total_violations,
-                'energy_ratio': 1.0 - energy_efficiency if self.n_cells > 0 else 0.0
+                'qos_compliant_steps': self.qos_compliant_steps,
+                'energy_unlock_ratio': min(1.0, max(0.0, (self.qos_compliant_steps - 10) / 30.0))
             }
         }
 
@@ -595,8 +524,8 @@ class FiveGEnv(gym.Env):
         active_action = action[:self.n_cells]
         
         current_powers = np.array([c.txPower for c in self.cells])
-        if len(current_powers) != len(self.previous_powers): 
-            self.previous_powers = current_powers
+        if not hasattr(self, 'previous_powers') or len(current_powers) != len(self.previous_powers): 
+            self.previous_powers = np.pad(current_powers, (0, self.max_cells - len(current_powers)), 'constant')
         
         self.ues, self.cells, self.neighbor_measurements = optimized_run_simulation_step(
             self.ues, self.cells, self.neighbor_measurements, self.config,
@@ -604,39 +533,38 @@ class FiveGEnv(gym.Env):
         )
         
         metrics = self.compute_metrics()
-        
-        # Use constraint-priority reward
         reward_info = self.compute_smooth_reward(metrics)
         reward = reward_info['reward']
         
-        # Add to metrics for logging
-        metrics['reward_components'] = reward_info['components']
-        metrics['weighted_components'] = reward_info['weighted']
-        metrics['reward_bonuses'] = reward_info['bonuses']
-        metrics['constraints'] = reward_info['constraints']
-        metrics.update(reward_info['metrics'])
+        # Accumulate episode reward
+        self.current_episode_reward += reward
+
+        # Comprehensive logging
+        metrics['reward_info'] = reward_info
         metrics['normalized_reward'] = reward
-        metrics['raw_reward'] = reward * 32.0
+        metrics['constraints_satisfied'] = reward_info['constraints_satisfied']
         
-        # Debug print for first step and when QoS status changes
-        if self.current_step == 0 or (hasattr(self, '_prev_qos_violated') and 
-            self._prev_qos_violated != (reward_info['constraints']['drop_violated'] or 
-                                        reward_info['constraints']['latency_violated'])):
+        # Periodic detailed logging
+        if self.current_step % 50 == 0 or self.current_step == 0:
+            status = "✅ COMPLIANT" if reward_info['constraints_satisfied'] else "❌ VIOLATED"
+            print(f"\n[Step {self.current_step}] {status}")
+            print(f"  Drop: {reward_info['metrics']['avg_drop_rate']:.3f}% (threshold: {self.config['dropCallThreshold']:.1f}%)")
+            print(f"  Latency: {reward_info['metrics']['avg_latency']:.2f}ms (threshold: {self.config['latencyThreshold']:.0f}ms)")
+            print(f"  Connection: {reward_info['metrics']['connection_rate_pct']:.1f}% (threshold: 95.0%)")
+            print(f"  Compliant streak: {reward_info['metrics']['qos_compliant_steps']}")
             
-            qos_violated = reward_info['constraints']['drop_violated'] or reward_info['constraints']['latency_violated']
-            self._prev_qos_violated = qos_violated
-            
-            # print(f"\n[DEBUG] Step {self.current_step}:")
-            # print(f"  QoS Status: {'❌ VIOLATED' if qos_violated else '✅ COMPLIANT'}")
-            # print(f"  Drop: {reward_info['metrics']['avg_drop_rate']:.2f}% "
-            #     f"(threshold: {self.config['dropCallThreshold']:.2f}%)")
-            # print(f"  Latency: {reward_info['metrics']['avg_latency']:.2f}ms "
-            #     f"(threshold: {self.config['latencyThreshold']:.2f}ms)")
-            # print(f"  Compliant streak: {reward_info['constraints']['qos_compliant_steps']} steps")
-            # print(f"  Energy multiplier: {reward_info['constraints']['energy_multiplier']:.2f}")
-            # print(f"  Connection: {reward_info['metrics']['connected_ues']}/{reward_info['metrics']['total_ues']} "
-            #     f"({reward_info['metrics']['connection_rate_pct']:.1f}%)")
-            # print(f"  Reward: {reward:.3f}")
+            if reward_info['constraints_satisfied']:
+                print(f"  Energy unlocked: {100*reward_info['metrics']['energy_unlock_ratio']:.0f}%")
+                print(f"  Reward components:")
+                for k, v in reward_info['components'].items():
+                    if v > 0:
+                        print(f"    {k}: {v:.3f}")
+            else:
+                print(f"  Penalties:")
+                for k, v in reward_info['constraint_penalties'].items():
+                    if v < 0:
+                        print(f"    {k}: {v:.3f}")
+            print(f"  Total reward: {reward:.4f}")
         
         self.current_step += 1
         terminated = self.current_step >= self.max_time_steps
@@ -646,10 +574,20 @@ class FiveGEnv(gym.Env):
                 self.total_episodes = 0
             self.total_episodes += 1
             
-            # Print episode summary
-            print(f"\n[EPISODE {self.total_episodes} COMPLETE]")
-            print(f"  Total QoS compliant steps: {reward_info['constraints']['qos_compliant_steps']}/{self.current_step}")
-            print(f"  Compliance rate: {100 * reward_info['constraints']['qos_compliant_steps'] / self.current_step:.1f}%")
+            compliance_rate = 100 * reward_info['metrics']['qos_compliant_steps'] / self.current_step
+            
+            print(f"\n{'='*60}")
+            print(f"[EPISODE {self.total_episodes} COMPLETE]")
+            print(f"  Total steps: {self.current_step}")
+            print(f"  Total episode reward: {self.current_episode_reward:.4f}")
+            print(f"  QoS compliant steps: {reward_info['metrics']['qos_compliant_steps']}")
+            print(f"  Compliance rate: {compliance_rate:.1f}%")
+            print(f"  Constraints satisfied: {reward_info['constraints_satisfied']}")
+            print(f"{'='*60}\n")
+        
+        info = reward_info
+        if terminated:
+            info["episode_rewards"] = self.current_episode_reward
         
         return self._get_obs(), float(reward), bool(terminated), False, metrics
 
@@ -824,6 +762,137 @@ class FiveGEnv(gym.Env):
         print(f"\nOverall Statistics:\nMean Reward: {np.mean(all_rewards):.3f} Std Reward: {np.std(all_rewards):.3f} Min: {np.min(all_rewards):.3f} Max: {np.max(all_rewards):.3f}")
         return all_rewards, all_components
 
+    def analyze_constraint_feasibility(self, num_episodes=10, power_levels=[0.3, 0.5, 0.7, 1.0]):
+        """
+        Test if constraints are achievable at different power levels.
+        This helps identify if your thresholds are realistic.
+        """
+        print("\n" + "="*70)
+        print("CONSTRAINT FEASIBILITY ANALYSIS")
+        print("="*70)
+        
+        results = {}
+        
+        for power in power_levels:
+            print(f"\nTesting with constant power = {power:.1f} (action = {power})")
+            print("-" * 70)
+            
+            compliant_steps = []
+            avg_drops = []
+            avg_latencies = []
+            connection_rates = []
+            
+            for ep in range(num_episodes):
+                obs, _ = self.reset()
+                done = False
+                ep_compliant = 0
+                ep_steps = 0
+                
+                while not done:
+                    action = np.ones(self.action_space.shape) * power
+                    obs, reward, done, _, info = self.step(action)
+                    
+                    ep_steps += 1
+                    if info['constraints_satisfied']:
+                        ep_compliant += 1
+                    
+                    avg_drops.append(info['reward_info']['metrics']['avg_drop_rate'])
+                    avg_latencies.append(info['reward_info']['metrics']['avg_latency'])
+                    connection_rates.append(info['reward_info']['metrics']['connection_rate_pct'])
+                
+                compliant_steps.append(100 * ep_compliant / ep_steps)
+            
+            results[power] = {
+                'compliance_rate': np.mean(compliant_steps),
+                'avg_drop': np.mean(avg_drops),
+                'avg_latency': np.mean(avg_latencies),
+                'avg_connection': np.mean(connection_rates)
+            }
+            
+            print(f"  Compliance rate: {results[power]['compliance_rate']:.1f}%")
+            print(f"  Avg drop rate: {results[power]['avg_drop']:.3f}% (threshold: {self.config['dropCallThreshold']:.1f}%)")
+            print(f"  Avg latency: {results[power]['avg_latency']:.1f}ms (threshold: {self.config['latencyThreshold']:.0f}ms)")
+            print(f"  Avg connection: {results[power]['avg_connection']:.1f}% (threshold: 95.0%)")
+            
+            if results[power]['compliance_rate'] > 80:
+                print(f"  ✅ Constraints are ACHIEVABLE at this power level")
+            elif results[power]['compliance_rate'] > 50:
+                print(f"  ⚠️  Constraints are SOMETIMES achievable")
+            else:
+                print(f"  ❌ Constraints are DIFFICULT to achieve")
+        
+        print("\n" + "="*70)
+        print("RECOMMENDATION:")
+        best_power = max(results.keys(), key=lambda k: results[k]['compliance_rate'])
+        print(f"  Best power level tested: {best_power:.1f}")
+        print(f"  Achieved {results[best_power]['compliance_rate']:.1f}% compliance")
+        print("="*70 + "\n")
+        
+        return results
+
+
+    def get_reward_statistics(self, num_episodes=20):
+        """
+        Collect reward statistics to understand the reward distribution.
+        """
+        all_rewards = []
+        compliant_rewards = []
+        violated_rewards = []
+        compliance_rates = []
+        
+        for ep in range(num_episodes):
+            obs, _ = self.reset()
+            done = False
+            ep_rewards = []
+            ep_compliant = 0
+            ep_steps = 0
+            
+            while not done:
+                action = np.random.uniform(0.3, 0.8, self.action_space.shape)
+                obs, reward, done, _, info = self.step(action)
+                
+                ep_steps += 1
+                ep_rewards.append(reward)
+                all_rewards.append(reward)
+                
+                if info['constraints_satisfied']:
+                    ep_compliant += 1
+                    compliant_rewards.append(reward)
+                else:
+                    violated_rewards.append(reward)
+            
+            compliance_rates.append(100 * ep_compliant / ep_steps)
+        
+        print("\n" + "="*70)
+        print("REWARD STATISTICS")
+        print("="*70)
+        print(f"\nOverall ({len(all_rewards)} steps):")
+        print(f"  Mean: {np.mean(all_rewards):.4f}")
+        print(f"  Std:  {np.std(all_rewards):.4f}")
+        print(f"  Min:  {np.min(all_rewards):.4f}")
+        print(f"  Max:  {np.max(all_rewards):.4f}")
+        
+        if compliant_rewards:
+            print(f"\nWhen constraints satisfied ({len(compliant_rewards)} steps):")
+            print(f"  Mean: {np.mean(compliant_rewards):.4f}")
+            print(f"  Std:  {np.std(compliant_rewards):.4f}")
+            print(f"  Range: [{np.min(compliant_rewards):.4f}, {np.max(compliant_rewards):.4f}]")
+        
+        if violated_rewards:
+            print(f"\nWhen constraints violated ({len(violated_rewards)} steps):")
+            print(f"  Mean: {np.mean(violated_rewards):.4f}")
+            print(f"  Std:  {np.std(violated_rewards):.4f}")
+            print(f"  Range: [{np.min(violated_rewards):.4f}, {np.max(violated_rewards):.4f}]")
+        
+        print(f"\nAverage compliance rate: {np.mean(compliance_rates):.1f}%")
+        print("="*70 + "\n")
+        
+        return {
+            'all': all_rewards,
+            'compliant': compliant_rewards,
+            'violated': violated_rewards,
+            'compliance_rates': compliance_rates
+        }
 # ------------------------------
 # Quick usage example
 # ------------------------------
