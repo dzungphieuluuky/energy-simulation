@@ -117,26 +117,26 @@ class ImprovedRewardComputer:
             'drop_rate': {
                 'violated': False,
                 'value': metrics['avg_drop_rate'],
-                'threshold': p.drop_call_threshold,
+                'threshold': p.dropCallThreshold,
                 'severity': 0.0
             },
             'latency': {
                 'violated': False,
                 'value': metrics['avg_latency'],
-                'threshold': p.latency_threshold,
+                'threshold': p.latencyThreshold,
                 'severity': 0.0
             },
             'cpu': {
                 'violated': False,
                 'value': metrics['max_cpu_usage'],
-                'threshold': p.cpu_threshold,
+                'threshold': p.cpuThreshold,
                 'severity': 0.0,
                 'count': metrics['cpu_violations']
             },
             'prb': {
                 'violated': False,
                 'value': metrics['max_prb_usage'],
-                'threshold': p.prb_threshold,
+                'threshold': p.prbThreshold,
                 'severity': 0.0,
                 'count': metrics['prb_violations']
             },
@@ -149,18 +149,18 @@ class ImprovedRewardComputer:
         }
         
         # Check drop rate
-        if metrics['avg_drop_rate'] > p.drop_call_threshold:
+        if metrics['avg_drop_rate'] > p.dropCallThreshold:
             violations['drop_rate']['violated'] = True
             violations['drop_rate']['severity'] = (
-                (metrics['avg_drop_rate'] - p.drop_call_threshold) / p.drop_call_threshold
+                (metrics['avg_drop_rate'] - p.dropCallThreshold) / p.dropCallThreshold
             )
             violations['has_violations'] = True
         
         # Check latency
-        if metrics['avg_latency'] > p.latency_threshold:
+        if metrics['avg_latency'] > p.latencyThreshold:
             violations['latency']['violated'] = True
             violations['latency']['severity'] = (
-                (metrics['avg_latency'] - p.latency_threshold) / p.latency_threshold
+                (metrics['avg_latency'] - p.latencyThreshold) / p.latencyThreshold
             )
             violations['has_violations'] = True
         
@@ -168,7 +168,7 @@ class ImprovedRewardComputer:
         if metrics['cpu_violations'] > 0:
             violations['cpu']['violated'] = True
             # Severity based on how far over threshold and how many cells
-            cpu_overage = (metrics['max_cpu_usage'] - p.cpu_threshold) / p.cpu_threshold
+            cpu_overage = (metrics['max_cpu_usage'] - p.cpuThreshold) / p.cpuThreshold
             cell_fraction = metrics['cpu_violations'] / self.n_cells
             violations['cpu']['severity'] = cpu_overage * (1 + cell_fraction)
             violations['has_violations'] = True
@@ -176,7 +176,7 @@ class ImprovedRewardComputer:
         # Check PRB usage (any cell over threshold is violation)
         if metrics['prb_violations'] > 0:
             violations['prb']['violated'] = True
-            prb_overage = (metrics['max_prb_usage'] - p.prb_threshold) / p.prb_threshold
+            prb_overage = (metrics['max_prb_usage'] - p.prbThreshold) / p.prbThreshold
             cell_fraction = metrics['prb_violations'] / self.n_cells
             violations['prb']['severity'] = prb_overage * (1 + cell_fraction)
             violations['has_violations'] = True
@@ -250,9 +250,9 @@ class ImprovedRewardComputer:
         total_energy = metrics['total_energy']
         
         # Maximum possible energy (all cells at max power + base consumption)
-        max_power_consumption = 10**((p.max_tx_power - 30)/10)  # dBm to watts
-        max_possible_energy = self.n_cells * (p.base_power + max_power_consumption)
-        
+        max_power_consumption = 10**((p.maxTxPower - 30)/10)  # dBm to watts
+        max_possible_energy = self.n_cells * (p.basePower + max_power_consumption)
+
         # Normalized energy efficiency (0 = worst, 1 = best)
         energy_efficiency = 1.0 - (total_energy / max(1, max_possible_energy))
         energy_efficiency = max(0.0, energy_efficiency)  # Clamp to [0, 1]
@@ -291,15 +291,15 @@ class ImprovedRewardComputer:
         
         # Drop rate quality bonus (how far below threshold)
         drop_quality = 0.0
-        if metrics['avg_drop_rate'] < p.drop_call_threshold:
+        if metrics['avg_drop_rate'] < p.dropCallThreshold:
             # More reward for being far below threshold
-            margin = (p.drop_call_threshold - metrics['avg_drop_rate']) / p.drop_call_threshold
+            margin = (p.dropCallThreshold - metrics['avg_drop_rate']) / p.dropCallThreshold
             drop_quality = margin * 0.3
         
         # Latency quality bonus (how far below threshold)
         latency_quality = 0.0
-        if metrics['avg_latency'] < p.latency_threshold:
-            margin = (p.latency_threshold - metrics['avg_latency']) / p.latency_threshold
+        if metrics['avg_latency'] < p.latencyThreshold:
+            margin = (p.latencyThreshold - metrics['avg_latency']) / p.latencyThreshold
             latency_quality = margin * 0.3
         
         total_quality_reward = connection_bonus + drop_quality + latency_quality
