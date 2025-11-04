@@ -19,7 +19,7 @@ A Reinforcement Learning project leveraging **Stable-Baselines3** to optimize en
 
 | File/Directory | Type | Description |
 | :--- | :--- | :--- |
-| `fiveg_env_chatgpt.py` | File | **Custom 5G Environment** (Gymnasium-based) implementation. |
+| `fiveg_env.py` | File | **Custom 5G Environment** (Gymnasium-based) implementation. |
 | `train.py` | File | Script for **training** new RL agents (PPO, SAC). |
 | `evaluate.py` | File | Script for **evaluating** trained models and performance. |
 | `diagnose.py` | File | Tools for **debugging** and detailed simulation analysis. |
