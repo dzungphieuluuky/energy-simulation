@@ -47,7 +47,7 @@ def calculate_path_loss(distance, frequency_hz, ue_id, current_time, seed):
     return path_loss
 
 
-@jit(nopython=True, cache=True)
+@jit(nopython=True, cache=True, parallel=True)
 def calculate_rsrp_batch(ue_positions, cell_positions, tx_powers, frequency, 
                          ue_ids, current_time, seed, min_tx_powers):
     """
@@ -57,11 +57,11 @@ def calculate_rsrp_batch(ue_positions, cell_positions, tx_powers, frequency,
     num_cells = cell_positions.shape[0]
     rsrp_matrix = np.zeros((num_ues, num_cells), dtype=np.float64)
     
-    for ue_idx in range(num_ues):
+    for ue_idx in prange(num_ues):
         ue_x, ue_y = ue_positions[ue_idx]
         ue_id = ue_ids[ue_idx]
         
-        for cell_idx in range(num_cells):
+        for cell_idx in prange(num_cells):
             cell_x, cell_y = cell_positions[cell_idx]
             
             # Calculate distance
@@ -350,7 +350,7 @@ def calculate_cell_latency(base_latency, load_ratio, num_ues,
     latency = latency + load_latency + ue_latency + power_latency_penalty
     return latency
 
-@jit(nopython=True, cache=True)
+@jit(nopython=True, cache=True, parallel=True)
 def process_measurements_batch(rsrp_matrix, tx_powers, min_tx_powers, 
                                rsrp_measurement_threshold):
     """
@@ -364,7 +364,7 @@ def process_measurements_batch(rsrp_matrix, tx_powers, min_tx_powers,
     sinr_matrix = np.full((num_ues, num_cells), np.nan, dtype=np.float64)
 
     for ue_idx in prange(num_ues):  # Use prange for potential parallel execution
-        for cell_idx in range(num_cells):
+        for cell_idx in prange(num_cells):
             rsrp = rsrp_matrix[ue_idx, cell_idx]
 
             # Only process measurements that are strong enough

@@ -4,7 +4,9 @@ import torch
 import os
 import pandas as pd
 import numpy as np
+import argparse
 from typing import Callable, Dict, Any
+
 
 # Stable Baselines3 components
 from stable_baselines3 import PPO, SAC, TD3, DDPG
@@ -38,7 +40,7 @@ POLICY_KWARGS = dict(
         max_cells=MAX_CELLS_SYSTEM_WIDE,
         n_cell_features=STATE_DIM_PER_CELL,
     ),
-    net_arch=dict(pi=[256, 256], qf=[256, 256]) # For actor-critic models
+    net_arch=dict(pi=[256, 256], qf=[256, 256], vf=[256, 256]) # For actor-critic models
 )
 
 HYPERPARAMS: Dict[str, Dict[str, Any]] = {
@@ -59,7 +61,7 @@ HYPERPARAMS: Dict[str, Dict[str, Any]] = {
         'params': {
             'learning_rate': 3e-4,
             'n_steps': 2048,
-            'batch_size': 64,
+            'batch_size': 128,
             'n_epochs': 10,
             'gamma': 0.99,
             'gae_lambda': 0.95,
@@ -174,15 +176,64 @@ def benchmark_algorithms(configs: list, max_cells: int, num_cpu: int, timesteps:
     
     return best_algo
 
+def parse_args() -> argparse.Namespace:
+    """Parses command-line arguments for the training script."""
+    parser = argparse.ArgumentParser(description="Unified training script for the 5G environment agent.")
+    
+    parser.add_argument(
+        "--algorithm", "-a", type=str, default="sac",
+        choices=['sac', 'ppo', 'td3', 'ddpg'],
+        help="The reinforcement learning algorithm to train. Default: 'sac'."
+    )
+    parser.add_argument(
+        "--total-timesteps", "-t", type=float, default=1_000_000,
+        help="Total number of timesteps for the training session. Supports scientific notation (e.g., 1e6). Default: 1,000,000."
+    )
+    parser.add_argument(
+        "--n-envs", type=int, default=os.cpu_count(),
+        help=f"Number of parallel environments to use. Default: {os.cpu_count()}."
+    )
+    parser.add_argument(
+        "--benchmark", action="store_true",
+        help="If set, run a short benchmark of SAC, PPO, and TD3 to find the best algorithm, then exit."
+    )
+    parser.add_argument(
+        "--continue-from-model", type=str, default=None,
+        help="Path to a .zip model file to continue training from."
+    )
+    parser.add_argument(
+        "--continue-from-stats", type=str, default=None,
+        help="Path to a .pkl VecNormalize stats file to use when continuing training. Required if --continue-from-model is set."
+    )
+    parser.add_argument(
+        "--log-folder", type=str, default="sb3_logs/",
+        help="Directory to save TensorBoard logs. Default: 'sb3_logs/'."
+    )
+    parser.add_argument(
+        "--model-folder", type=str, default="sb3_models/",
+        help="Directory to save model checkpoints and final models. Default: 'sb3_models/'."
+    )
+    
+    args = parser.parse_args()
+    
+    # --- Argument validation ---
+    if args.continue_from_model and not args.continue_from_stats:
+        parser.error("--continue-from-stats is required when using --continue-from-model.")
+    if args.continue_from_stats and not args.continue_from_model:
+        parser.error("--continue-from-model is required when using --continue-from-stats.")
+        
+    return args
+
 
 # =================================================================================
 # --- 3. MAIN TRAINING SCRIPT ---
 # =================================================================================
 
-if __name__ == "__main__":
+def main(args: argparse.Namespace):
+    """Main function to run the training pipeline."""
     print("--- Starting Unified 5G Agent Training Script ---")
     print(f"Using device: {DEVICE}")
-    print(f"Max cells: {MAX_CELLS_SYSTEM_WIDE}, Parallel envs: {NUM_CPU_CORES}")
+    print(f"Max cells: {MAX_CELLS_SYSTEM_WIDE}, Parallel envs: {args.n_envs}")
 
     # --- Load Scenarios ---
     scenario_folder = "scenarios/"
@@ -199,77 +250,63 @@ if __name__ == "__main__":
         print(f"ERROR: Scenario folder '{scenario_folder}' not found. Exiting.")
         exit()
 
-    # --- Algorithm Selection ---
-    print("\n" + "="*50 + "\n1. ALGORITHM SELECTION\n" + "="*50)
-    print("1. SAC (Recommended for continuous control)")
-    print("2. PPO (Stable on-policy alternative)")
-    print("3. TD3 (Alternative to SAC)")
-    print("4. DDPG (Older off-policy algorithm)")
-    print("5. Run Benchmark (briefly trains SAC, PPO, TD3 to recommend the best)")
-    
-    choice = input("\nChoose algorithm or benchmark (default: 1): ").strip()
-    if choice == '2': algorithm = 'ppo'
-    elif choice == '3': algorithm = 'td3'
-    elif choice == '4': algorithm = 'ddpg'
-    elif choice == '5': algorithm = benchmark_algorithms(scenario_configs, MAX_CELLS_SYSTEM_WIDE, min(4, NUM_CPU_CORES))
-    else: algorithm = 'sac'
-    
+    # --- Algorithm Selection & Benchmarking ---
+    if args.benchmark:
+        benchmark_algorithms(scenario_configs, MAX_CELLS_SYSTEM_WIDE, min(4, args.n_envs))
+        print("\nBenchmark complete. Exiting script.")
+        return # Exit after benchmarking
+
+    algorithm = args.algorithm
     print(f"\n--- Preparing to train with {algorithm.upper()} ---")
 
     # --- Directory Setup ---
-    log_dir, model_dir = "sb3_logs/", "sb3_models/"
+    log_dir, model_dir = args.log_folder, args.model_folder
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
     # --- Environment and Model Initialization ---
-    env_thunks = [make_env_thunk(scenario_configs[i % len(scenario_configs)], MAX_CELLS_SYSTEM_WIDE, seed=i) for i in range(NUM_CPU_CORES)]
+    env_thunks = [make_env_thunk(scenario_configs[i % len(scenario_configs)], MAX_CELLS_SYSTEM_WIDE, seed=i) for i in range(args.n_envs)]
     
-    model = None
-    env = None
-    continue_training = input("\nContinue training from a checkpoint? (y/n): ").strip().lower() == 'y'
+    continue_training = bool(args.continue_from_model)
 
-    try:
-        if continue_training:
-            print("\nAvailable model checkpoints:")
-            [print(f"  - {f}") for f in sorted(os.listdir(model_dir)) if f.endswith('.zip')]
-            model_path = os.path.join(model_dir, input("Enter path to model checkpoint: ").strip())
-
-            print("\nAvailable normalization stats files:")
-            [print(f"  - {f}") for f in sorted(os.listdir(model_dir)) if f.endswith('.pkl')]
-            stats_path = os.path.join(model_dir, input("Enter path to VecNormalize stats file: ").strip())
-
+    if continue_training:
+        print(f"\nAttempting to load model from: {args.continue_from_model}")
+        print(f"Attempting to load stats from: {args.continue_from_stats}")
+        try:
             base_env = SubprocVecEnv(env_thunks)
-            env = VecNormalize.load(stats_path, base_env)
+            env = VecNormalize.load(args.continue_from_stats, base_env)
             
             model_class = HYPERPARAMS[algorithm]['model_class']
-            model = model_class.load(model_path, env=env, device=DEVICE)
+            model = model_class.load(args.continue_from_model, env=env, device=DEVICE)
             print(f"\nSuccessfully loaded {algorithm.upper()} model and stats. Resuming training...")
-        else:
-            raise ValueError("Starting a new training session.")
-    except (ValueError, FileNotFoundError, KeyError) as e:
-        if continue_training: print(f"Could not load files: {e}.")
+        except (FileNotFoundError, KeyError) as e:
+            print(f"\nFATAL ERROR: Could not load files: {e}. Exiting.")
+            return
+    else:
         print("\nStarting a new training session from scratch...")
         env = SubprocVecEnv(env_thunks)
         env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
         model = create_model(algorithm, env, DEVICE)
 
     # --- Training Execution ---
-    timesteps_str = input(f"\nEnter total timesteps for this session (default 1,000,000): ").strip()
-    total_timesteps = int(float(timesteps_str.replace(',', ''))) if timesteps_str else 1_000_000
-    
+    total_timesteps = int(args.total_timesteps)
     run_name_prefix = f"{algorithm}_mixed_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
     
     # --- Callbacks for robust training ---
     checkpoint_callback = CheckpointCallback(
-        save_freq=max(50000 // NUM_CPU_CORES, 1), save_path=model_dir, name_prefix=run_name_prefix
+        save_freq=max(50000 // args.n_envs, 1), save_path=model_dir, name_prefix=run_name_prefix
     )
     constraint_monitor_callback = ConstraintMonitorCallback()
+
     eval_env = VecNormalize(SubprocVecEnv([make_env_thunk(scenario_configs[0], MAX_CELLS_SYSTEM_WIDE, seed=99)]), training=False, norm_reward=False)
+    eval_env.obs_rms = env.obs_rms
+    eval_env.training = False
+
     eval_callback = EvalCallback(
         eval_env, 
         best_model_save_path=os.path.join(model_dir, f"best_model_{algorithm}"),
         log_path=log_dir, 
-        eval_freq=max(25000 // NUM_CPU_CORES, 1),
+        eval_freq=max(25000 // args.n_envs, 1),
         deterministic=True, 
         render=False
     )
@@ -285,14 +322,11 @@ if __name__ == "__main__":
     print("\n--- Training Session Complete ---")
 
     # --- Save Final Model and Stats ---
-    kaggle_save_path = "/kaggle/working/"
-    if not os.path.exists(kaggle_save_path): kaggle_save_path = model_dir # Fallback for local run
-
     time_stamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-    final_model_path = os.path.join(kaggle_save_path, f"{algorithm}_final_{time_stamp}.zip")
+    final_model_path = os.path.join(model_dir, f"{algorithm}_final_{time_stamp}.zip")
     model.save(final_model_path)
 
-    stats_path = os.path.join(kaggle_save_path, f"vec_normalize_final_{time_stamp}.pkl")
+    stats_path = os.path.join(model_dir, f"vec_normalize_final_{time_stamp}.pkl")
     env.save(stats_path)
     
     print(f"\n✅ Final generalized model saved to: {final_model_path}")
@@ -304,7 +338,7 @@ if __name__ == "__main__":
     done = False
     total_reward, steps = 0, 0
     while not done and steps < 500: # 500 steps for a more thorough test
-        action, _ = model.predict(eval_env.normalize_obs(obs), deterministic=True)
+        action, _ = model.predict(obs, deterministic=True)
         obs, reward, done, _ = eval_env.step(action)
         total_reward += reward
         steps += 1
@@ -314,3 +348,7 @@ if __name__ == "__main__":
         print("⚠️  Warning: Final model has negative average reward in evaluation.")
     else:
         print("🎉 Final model shows promising performance!")
+
+if __name__ == "__main__":
+    cli_args = parse_args()
+    main(cli_args)
