@@ -5,6 +5,8 @@ import pickle
 import os
 import random
 import json
+import tqdm
+import multiprocessing
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, SubprocVecEnv, DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
@@ -122,6 +124,66 @@ def create_training_env(configs: list, n_envs=4, is_eval=False):
     norm_reward = not is_eval
     env = VecNormalize(env, norm_obs=True, norm_reward=norm_reward, clip_obs=10., gamma=0.99)
     return env
+
+def run_episode_worker(args):
+    """
+    A worker function that runs a single episode for a given config.
+    Designed to be used with multiprocessing.Pool.
+    """
+    config, behavioral_policy = args
+    
+    # Each worker needs its own environment instance
+    # Using Monitor to get episode info, but it's not strictly necessary here
+    env = Monitor(FiveGEnv(config))
+    
+    obs_list, act_list = [], []
+    
+    obs, _ = env.reset()
+    done = False
+    while not done:
+        action = behavioral_policy.sample_action()
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        
+        obs_list.append(obs)
+        act_list.append(action)
+        obs = next_obs
+        
+    env.close()
+    return obs_list, act_list
+
+def generate_expert_dataset_parallel(configs: list, behavioral_policy, num_episodes_per_config=50):
+    """
+    Generates a mixed expert dataset in parallel using all available CPU cores.
+    """
+    print(f"\n{'='*70}\nGENERATING MIXED EXPERT DATASET (IN PARALLEL)\n{'='*70}")
+    
+    # Create a list of all tasks to be run
+    tasks = []
+    for config in configs:
+        for _ in range(num_episodes_per_config):
+            # Pass a copy of the config and the policy to each worker
+            tasks.append((config.copy(), behavioral_policy))
+
+    # Use as many processes as there are CPU cores
+    num_processes = multiprocessing.cpu_count()
+    print(f"Using {num_processes} parallel processes for data generation...")
+
+    expert_observations = []
+    expert_actions = []
+
+    # Create a pool of worker processes
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        # Use tqdm to create a progress bar for the parallel tasks
+        results = list(tqdm(pool.imap(run_episode_worker, tasks), total=len(tasks), desc="Generating Episodes"))
+
+    # Combine the results from all workers
+    for obs_list, act_list in results:
+        expert_observations.extend(obs_list)
+        expert_actions.extend(act_list)
+
+    print(f"\n✅ Mixed dataset generation complete. Total samples: {len(expert_actions)}\n")
+    return np.array(expert_observations), np.array(expert_actions)
 
 def generate_expert_dataset(configs: list, behavioral_policy, num_episodes_per_config=50):
     """
@@ -247,7 +309,7 @@ def main():
     behavioral_policy = SafeBehavioralCurriculum(action_dim=temp_env_for_dims.action_space.shape[0])
     del temp_env_for_dims
 
-    expert_obs, expert_acts = generate_expert_dataset(
+    expert_obs, expert_acts = generate_expert_dataset_parallel(
         scenario_configs, behavioral_policy, num_episodes_per_config=PRETRAIN_EPISODES_PER_CONFIG
     )
     
@@ -322,4 +384,5 @@ def main():
     eval_env.close()
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
