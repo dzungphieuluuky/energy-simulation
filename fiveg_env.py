@@ -7,6 +7,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from typing import List, Tuple, Dict, Any, Optional
 
+from improved_reward import ImprovedRewardComputer
 from fiveg_objects import Cell, UE, SimulationParams
 from simulation_logic import (
     update_ue_mobility, update_signal_measurements, check_handover_events,
@@ -61,6 +62,8 @@ class FiveGEnv(gym.Env):
         self.total_episodes: int = 0
         self.current_episode_reward: float = 0.0
         self.qos_compliant_steps: int = 0
+
+        self.reward_computer = ImprovedRewardComputer(self.sim_params, self.max_cells)
 
     def _setup_scenario(self, seed: int):
         sites = create_sites(self.sim_params, seed)
@@ -145,35 +148,16 @@ class FiveGEnv(gym.Env):
         self.current_step = 0
         self.qos_compliant_steps = 0
         self.current_episode_reward = 0.0
+        self.reward_computer.reset()
+
         
         self._setup_scenario(self.seed)
         self.ues, self.cells = run_simulation_step(self.ues, self.cells, self.sim_params, self.time_step_duration, -1, self.seed)
         return self._get_obs(), {}
 
     def compute_reward(self, metrics: Dict[str, Any]) -> float:
-        """Computes reward based on QoS satisfaction and energy efficiency."""
-        p = self.sim_params
-        drop_violated = metrics['avg_drop_rate'] > p.dropCallThreshold
-        latency_violated = metrics['avg_latency'] > p.latencyThreshold
-        
-        if not (drop_violated or latency_violated):
-            self.qos_compliant_steps += 1
-            qos_reward = 1.0
-            energy_reward = 0.0
-            if self.qos_compliant_steps > 20:
-                total_energy = metrics['total_energy']
-                max_possible_energy = self.n_cells * (p.basePower + 10**((p.maxTxPower - 30)/10))
-                energy_efficiency = 1.0 - (total_energy / max(1, max_possible_energy))
-                unlock_factor = min(1.0, (self.qos_compliant_steps - 20) / 80.0)
-                energy_reward = energy_efficiency * unlock_factor
-            return qos_reward + energy_reward
-        else:
-            self.qos_compliant_steps = 0
-            penalty = 0.0
-            if drop_violated: penalty += -1.0 * (1 + (metrics['avg_drop_rate'] - p.dropCallThreshold) / p.dropCallThreshold)
-            if latency_violated: penalty += -1.0 * (1 + (metrics['avg_latency'] - p.latencyThreshold) / p.latencyThreshold)
-            return penalty
-
+        return self.reward_computer.compute_reward(metrics, self.cells)
+    
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         active_action = action[:self.n_cells]
         self.ues, self.cells = run_simulation_step(
@@ -195,8 +179,15 @@ class FiveGEnv(gym.Env):
         return self._get_obs(), float(reward), bool(terminated), False, metrics
 
     def _log_episode_summary(self):
-        compliance_rate = (self.qos_compliant_steps / self.current_step) * 100 if self.current_step > 0 else 0
-        print(f"\n{'='*60}\n[EPISODE {self.total_episodes} COMPLETE]\n  - Total Reward: {self.current_episode_reward:.2f}\n  - Final Compliance Rate: {compliance_rate:.1f}%\n{'='*60}\n")
+        stats = self.reward_computer.get_stats()
+        compliance_rate = stats['compliance_rate']
+        print(f"\n{'='*60}")
+        print(f"[EPISODE {self.total_episodes} COMPLETE]")
+        print(f"  - Total Reward: {self.current_episode_reward:.2f}")
+        print(f"  - Compliance Rate: {compliance_rate:.1f}%")
+        print(f"  - Compliant Steps: {stats['qos_compliant_steps']}")
+        print(f"  - Max Consecutive Violations: {stats['consecutive_violations']}")
+        print(f"{'='*60}\n")
 
 if __name__ == "__main__":
     cfg = {'simTime': 500, 'numSites': 3, 'numUEs': 50, 'deploymentScenario': 'dense_urban', 'dropCallThreshold': 1.0, 'latencyThreshold': 50.0}

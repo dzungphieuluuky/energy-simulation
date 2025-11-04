@@ -60,13 +60,16 @@ HYPERPARAMS: Dict[str, Dict[str, Any]] = {
         'model_class': PPO,
         'params': {
             'learning_rate': 3e-4,
-            'n_steps': 2048,
-            'batch_size': 128,
+            'n_steps': 4096,
+            'batch_size': 256,
             'n_epochs': 10,
-            'gamma': 0.99,
+            'gamma': 0.995,
             'gae_lambda': 0.95,
             'clip_range': 0.2,
-            'ent_coef': 0.01,
+            'ent_coef': 0.005,
+            'vs_coef': 0.5,
+            'max_grad_norm': 0.5,
+            'target_kl': 0.02,
         }
     },
     'td3': {
