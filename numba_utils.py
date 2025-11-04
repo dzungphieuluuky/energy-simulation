@@ -349,3 +349,49 @@ def calculate_cell_latency(base_latency, load_ratio, num_ues,
     
     latency = latency + load_latency + ue_latency + power_latency_penalty
     return latency
+
+@jit(nopython=True, cache=True)
+def process_measurements_batch(rsrp_matrix, tx_powers, min_tx_powers, 
+                               rsrp_measurement_threshold):
+    """
+    Takes a matrix of RSRP values and calculates RSRQ and SINR matrices.
+    This function contains all the per-pair logic that can be JIT-compiled.
+    """
+    num_ues, num_cells = rsrp_matrix.shape
+    
+    # Create empty matrices to store the results
+    rsrq_matrix = np.full((num_ues, num_cells), np.nan, dtype=np.float64)
+    sinr_matrix = np.full((num_ues, num_cells), np.nan, dtype=np.float64)
+
+    for ue_idx in prange(num_ues):  # Use prange for potential parallel execution
+        for cell_idx in range(num_cells):
+            rsrp = rsrp_matrix[ue_idx, cell_idx]
+
+            # Only process measurements that are strong enough
+            if rsrp >= (rsrp_measurement_threshold - 5.0):
+                # --- Replicate the RSRQ/SINR logic from the original numba_utils ---
+                # RSSI calculation
+                # Note: To avoid seeding issues inside a JIT function, we use small constants
+                # for random variation. This is a common pattern for performance.
+                rssi = rsrp + 10.0 * math.log10(12.0) + (np.random.randn() * 0.5)
+        
+                # RSRQ calculation (clamped between -20 and -3 dB)
+                rsrq = 10.0 * math.log10(12.0) + rsrp - rssi
+                rsrq = max(-20.0, min(-3.0, rsrq))
+                
+                # SINR calculation
+                base_sinr = rsrp - (-110.0)  # Noise floor at -110 dBm
+                sinr = base_sinr + (np.random.randn() * 2.0)
+                
+                # --- Replicate the SINR penalty logic from simulation_logic ---
+                tx_power = tx_powers[cell_idx]
+                min_tx_power = min_tx_powers[cell_idx]
+                if tx_power <= min_tx_power + 2.0:
+                    sinr_penalty = (min_tx_power + 2.0 - tx_power) * 6.0
+                    sinr = sinr - sinr_penalty
+                
+                # Store the final results in the matrices
+                rsrq_matrix[ue_idx, cell_idx] = rsrq
+                sinr_matrix[ue_idx, cell_idx] = sinr
+                
+    return rsrq_matrix, sinr_matrix

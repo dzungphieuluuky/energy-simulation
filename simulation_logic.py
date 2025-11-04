@@ -12,7 +12,8 @@ from numba_utils import (
     evaluate_handover_success_prob, calculate_drop_probability,
     calculate_cell_cpu_usage, calculate_cell_prb_usage,
     calculate_cell_energy_consumption, calculate_theoretical_drop_rate,
-    calculate_cell_latency
+    calculate_cell_latency, process_measurements_batch,
+    calculate_rsrp_batch
 )
 
 
@@ -199,42 +200,63 @@ def update_signal_measurements(ues: List[UE], cells: List[Cell],
                                rsrp_measurement_threshold: float, 
                                current_time: float, seed: int) -> List[UE]:
     """Update RSRP/RSRQ/SINR measurements for all UEs"""
-    for ue in ues:
+    if not ues or not cells:
+        return ues
+
+    # --- Step 1: Data Extraction (same as before) ---
+    # Convert Python object attributes into fast NumPy arrays
+    ue_positions = np.array([[ue.x, ue.y] for ue in ues], dtype=np.float64)
+    cell_positions = np.array([[c.x, c.y] for c in cells], dtype=np.float64)
+    tx_powers = np.array([c.tx_power for c in cells], dtype=np.float64)
+    min_tx_powers = np.array([c.min_tx_power for c in cells], dtype=np.float64)
+    ue_ids = np.array([ue.id for ue in ues], dtype=np.int32)
+    frequency = cells[0].frequency
+
+    # --- Step 2: Numba Kernels ---
+    # Call the first fast Numba kernel to get all RSRP values
+    rsrp_matrix = calculate_rsrp_batch(
+        ue_positions, cell_positions, tx_powers, frequency,
+        ue_ids, current_time, seed, min_tx_powers
+    )
+
+    # Call the SECOND fast Numba kernel to process the RSRPs into RSRQs and SINRs
+    rsrq_matrix, sinr_matrix = process_measurements_batch(
+        rsrp_matrix, tx_powers, min_tx_powers, rsrp_measurement_threshold
+    )
+
+    # --- Step 3: Data Re-integration ---
+    # Now, we do ONE final, fast Python loop to update the objects from the result matrices.
+    # This is much faster than doing calculations inside the loop.
+    for i, ue in enumerate(ues):
         measurements = []
-        for cell in cells:
-            distance = math.sqrt((ue.x - cell.x)**2 + (ue.y - cell.y)**2)
-            path_loss = calculate_path_loss(distance, cell.frequency, ue.id, current_time, seed)
+        for j, cell in enumerate(cells):
+            rsrp = rsrp_matrix[i, j]
             
-            rsrp_seed = (seed + 6000 + ue.id + cell.id + int(math.floor(current_time * 100))) % (2**32)
-            np.random.seed(rsrp_seed)
-            rsrp = cell.tx_power - path_loss + np.random.randn() * 1.5
-            
-            if cell.tx_power <= cell.min_tx_power + 2:
-                rsrp -= (cell.min_tx_power + 2 - cell.tx_power) * 8.0
-                rsrp += np.random.randn() * 3.0
-            
-            if rsrp >= (rsrp_measurement_threshold - 5):
-                rsrq, sinr = calculate_rsrq_sinr(rsrp, rsrp_measurement_threshold)
-                if cell.tx_power <= cell.min_tx_power + 2:
-                    sinr -= (cell.min_tx_power + 2 - cell.tx_power) * 6.0
-                
-                measurements.append(NeighborMeasurement(cell.id, rsrp, rsrq, sinr))
+            # Check for NaN, which indicates the measurement was below the threshold in Numba
+            if not np.isnan(rsrp) and not np.isnan(sinr_matrix[i, j]):
+                measurements.append(
+                    NeighborMeasurement(
+                        cell_id=cell.id, 
+                        rsrp=rsrp, 
+                        rsrq=rsrq_matrix[i, j], 
+                        sinr=sinr_matrix[i, j]
+                    )
+                )
         
-        # Update UE's state based on new measurements
+        # Update UE's state (this part is the same as before)
         if not measurements:
             ue.serving_cell = None
             ue.rsrp = ue.rsrq = ue.sinr = np.nan
             ue.neighbor_measurements = []
-            continue
-        
-        serving_meas = next((m for m in measurements if m.cell_id == ue.serving_cell), None)
-        if serving_meas:
-            ue.rsrp, ue.rsrq, ue.sinr = serving_meas.rsrp, serving_meas.rsrq, serving_meas.sinr
         else:
-            ue.serving_cell = None
-            ue.rsrp = ue.rsrq = ue.sinr = np.nan
-        
-        ue.neighbor_measurements = measurements
+            serving_meas = next((m for m in measurements if m.cell_id == ue.serving_cell), None)
+            if serving_meas:
+                ue.rsrp, ue.rsrq, ue.sinr = serving_meas.rsrp, serving_meas.rsrq, serving_meas.sinr
+            else:
+                ue.serving_cell = None
+                ue.rsrp = ue.rsrq = ue.sinr = np.nan
+            ue.neighbor_measurements = measurements
+            
     return ues
 
 

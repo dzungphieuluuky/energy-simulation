@@ -5,6 +5,7 @@ import pickle
 import os
 import random
 import json
+import sys
 import multiprocessing
 from tqdm import tqdm
 from stable_baselines3 import PPO
@@ -24,7 +25,7 @@ class SafeBehavioralCurriculum:
     REFINED VERSION.
     """
     def __init__(self, action_dim, 
-                 initial_range=(0.75, 0.8),
+                 initial_range=(0.8, 0.95),
                  final_range=(0.5, 0.75),
                  hold_episodes=50,
                  compliance_threshold=0.98,
@@ -155,32 +156,49 @@ def run_episode_worker(args):
 def generate_expert_dataset_parallel(configs: list, behavioral_policy, num_episodes_per_config=50):
     """
     Generates a mixed expert dataset in parallel using all available CPU cores.
+    Includes a robust mechanism to handle KeyboardInterrupt (Ctrl+C).
     """
     print(f"\n{'='*70}\nGENERATING MIXED EXPERT DATASET (IN PARALLEL)\n{'='*70}")
     
-    # Create a list of all tasks to be run
     tasks = []
     for config in configs:
         for _ in range(num_episodes_per_config):
-            # Pass a copy of the config and the policy to each worker
             tasks.append((config.copy(), behavioral_policy))
 
-    # Use as many processes as there are CPU cores
-    num_processes = multiprocessing.cpu_count() - 6
-    print(f"Using {num_processes} parallel processes for data generation...")
-
+    num_processes = multiprocessing.cpu_count()
+    print(f"Using {num_processes} parallel processes. Press Ctrl+C to interrupt.")
+    
     expert_observations = []
     expert_actions = []
 
-    # Create a pool of worker processes
-    with multiprocessing.Pool(processes=num_processes) as pool:
+    # Manual pool management for robust interrupt handling
+    pool = multiprocessing.Pool(processes=num_processes)
+    try:
         # Use tqdm to create a progress bar for the parallel tasks
-        results = list(tqdm(pool.imap(run_episode_worker, tasks), total=len(tasks), desc="Generating Episodes"))
+        results_iterator = pool.imap(run_episode_worker, tasks)
+        
+        # Use tqdm's manual control to iterate
+        with tqdm(total=len(tasks), desc="Generating Episodes") as pbar:
+            for result in results_iterator:
+                obs_list, act_list = result
+                expert_observations.extend(obs_list)
+                expert_actions.extend(act_list)
+                pbar.update(1)
 
-    # Combine the results from all workers
-    for obs_list, act_list in results:
-        expert_observations.extend(obs_list)
-        expert_actions.extend(act_list)
+    except KeyboardInterrupt:
+        print("\n\n🛑 KeyboardInterrupt detected! Terminating worker processes...")
+        # Forcefully terminate all worker processes
+        pool.terminate()
+        # Wait for the processes to be fully cleaned up
+        pool.join()
+        print("Workers terminated. Exiting script.")
+        # Exit the script with an error code
+        sys.exit(1)
+    
+    finally:
+        # This block ensures the pool is closed cleanly on normal completion
+        pool.close()
+        pool.join()
 
     print(f"\n✅ Mixed dataset generation complete. Total samples: {len(expert_actions)}\n")
     return np.array(expert_observations), np.array(expert_actions)
