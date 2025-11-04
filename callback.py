@@ -20,8 +20,8 @@ class ConstraintMonitorCallback(BaseCallback):
             self.violation_history.append(kpi_violations)
             
             # Track compliance
-            drop_ok = info.get('avg_drop_rate', 999) <= self.training_env.get_attr('sim_params')[0].drop_call_threshold
-            latency_ok = info.get('avg_latency', 999) <= self.training_env.get_attr('sim_params')[0].latency_threshold
+            drop_ok = info.get('avg_drop_rate', 999) <= self.training_env.get_attr('sim_params')[0].dropCallThreshold
+            latency_ok = info.get('avg_latency', 999) <= self.training_env.get_attr('sim_params')[0].latencyThreshold
             cpu_ok = info.get('cpu_violations', 999) == 0
             prb_ok = info.get('prb_violations', 999) == 0
             

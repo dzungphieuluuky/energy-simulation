@@ -8,6 +8,7 @@ from gymnasium import spaces
 from typing import List, Tuple, Dict, Any, Optional
 
 from improved_reward import ImprovedRewardComputer
+from adaptive_reward import AdaptiveRewardComputer
 from fiveg_objects import Cell, UE, SimulationParams
 from simulation_logic import (
     update_ue_mobility, update_signal_measurements, check_handover_events,
@@ -63,8 +64,8 @@ class FiveGEnv(gym.Env):
         self.current_episode_reward: float = 0.0
         self.qos_compliant_steps: int = 0
 
-        self.reward_computer = ImprovedRewardComputer(self.sim_params, self.max_cells)
-
+        training_stage = env_config.get('training_stage', 'early')
+        self.reward_computer = AdaptiveRewardComputer(self.sim_params, self.max_cells, training_stage)
     def _setup_scenario(self, seed: int):
         sites = create_sites(self.sim_params, seed)
         self.cells = configure_cells(sites, self.sim_params)
