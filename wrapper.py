@@ -1,18 +1,25 @@
 import gymnasium as gym
 import numpy as np
 from collections import deque
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple, Optional
 from fiveg_env import FiveGEnv
 
 class LagrangianRewardWrapper(gym.Wrapper):
     """
-    Implements a Lagrangian reward structure by separating the primary objective (reward)
-    from the constraints (costs). The final reward is `PrimalReward - dot(Lambdas, Costs)`.
+    Wraps the 5G environment to implement a Lagrangian reward structure.
+
+    This wrapper separates the primary objective (reward) from the constraints (costs).
+    - The "primal reward" is what the agent tries to maximize (e.g., energy efficiency).
+    - The "cost" is a non-negative value for each constraint violation.
+    - The final reward given to the agent is: `Reward = PrimalReward - dot(Lambdas, Costs)`.
     """
-    def __init__(self, env: FiveGEnv, constraint_keys: List[str]):
+    def __init__(self, env: FiveGEnv, constraint_keys: List[str] = None):
         super().__init__(env)
         self.env = env
-        self.constraint_keys = constraint_keys
+        if constraint_keys is None:
+            self.constraint_keys = ['drop_rate', 'latency', 'cpu_violations', 'prb_violations']
+
+        # Initialize Lagrange multipliers (lambdas) for each constraint
         self.lambdas = {key: 1.0 for key in self.constraint_keys}
         
     def _compute_primal_reward(self, metrics: Dict[str, Any]) -> float:
@@ -28,34 +35,59 @@ class LagrangianRewardWrapper(gym.Wrapper):
         """Calculate the non-negative cost for each constraint violation."""
         p = self.env.sim_params
         costs = {key: 0.0 for key in self.constraint_keys}
-        
-        # Calculate cost for each constraint as normalized severity
-        if metrics.get('avg_drop_rate', 0) > p.dropCallThreshold:
-            costs['drop_rate'] = (metrics['avg_drop_rate'] - p.dropCallThreshold) / p.dropCallThreshold
-        if metrics.get('avg_latency', 0) > p.latencyThreshold:
-            costs['latency'] = (metrics['avg_latency'] - p.latencyThreshold) / p.latencyThreshold
-        if metrics.get('cpu_violations', 0) > 0:
-            costs['cpu_violations'] = metrics['cpu_violations'] / self.env.n_cells
-        if metrics.get('prb_violations', 0) > 0:
-            costs['prb_violations'] = metrics['prb_violations'] / self.env.n_cells
+
+        # --- Drop Rate Constraint ---
+        threshold = p.dropCallThreshold
+        value = metrics.get('avg_drop_rate', 0)
+        if value > threshold:
+            costs['drop_rate'] = (value - threshold) / threshold # Normalized severity
+
+        # --- Latency Constraint ---
+        threshold = p.latencyThreshold
+        value = metrics.get('avg_latency', 0)
+        if value > threshold:
+            costs['latency'] = (value - threshold) / threshold
+
+        # --- CPU Violations Constraint ---
+        value = metrics.get('cpu_violations', 0)
+        if value > 0:
+            costs['cpu_violations'] = value / self.env.n_cells # Normalize by number of cells
+
+        # --- PRB Violations Constraint ---
+        value = metrics.get('prb_violations', 0)
+        if value > 0:
+            costs['prb_violations'] = value / self.env.n_cells
+            
         return costs
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
+        
         primal_reward = self._compute_primal_reward(info)
         costs = self._compute_costs(info)
+        
+        # Calculate the Lagrangian penalty by summing the product of each lambda and its cost
         lagrangian_penalty = sum(self.lambdas[key] * costs[key] for key in self.constraint_keys)
+        
+        # The final reward the agent sees is the trade-off determined by the lambdas
         reward = primal_reward - lagrangian_penalty
-        info['lagrangian_costs'] = costs # Pass costs to the callback
+        
+        # Store costs in the info dict for the callback to use
+        info['lagrangian_costs'] = costs
+        
         return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
+        # *** CRITICAL FIX ***
+        # Must pass **kwargs to the underlying environment to handle seeds and options.
         return self.env.reset(**kwargs)
     
     def update_lambdas(self, new_lambdas: Dict[str, float]):
-        """Allows the callback to update the lambda values."""
+        """Allows the callback to update the lambda values from outside the wrapper."""
         for key, value in new_lambdas.items():
-            if key in self.lambdas: self.lambdas[key] = value
+            if key in self.lambdas:
+                self.lambdas[key] = value
+
 class StrictConstraintWrapper(gym.Wrapper):
     """
     Zero reward if ANY constraint is violated.
@@ -136,13 +168,6 @@ Key improvements:
 4. Adaptive reward scaling based on training phase
 5. Better handling of partial constraint satisfaction
 """
-
-import gym
-import numpy as np
-from collections import deque
-from typing import Dict, Any, Tuple
-
-
 class SimplifiedHERForPPO(gym.Wrapper):
     """
     Enhanced HER wrapper for PPO with zero-reward-on-violation strategy.

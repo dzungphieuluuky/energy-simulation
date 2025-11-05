@@ -1,4 +1,4 @@
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 import numpy as np
 class ConstraintMonitorCallback(BaseCallback):
     """Enhanced monitoring with violation tracking and adaptive penalties."""
@@ -68,27 +68,47 @@ class AlgorithmComparisonCallback(BaseCallback):
         return True
     
 class LambdaUpdateCallback(BaseCallback):
-    """Performs gradient descent to update the Lagrange multipliers (lambdas)."""
+    """
+    Performs gradient descent to update the Lagrange multipliers (lambdas).
+    
+    The update rule for each lambda is: λ_new = max(0, λ_old + learning_rate * cost).
+    This is a gradient ascent step on the cost, which minimizes the Lagrangian objective.
+    """
     def __init__(self, lambda_lr: float = 0.01, update_freq: int = 1000, verbose: int = 1):
         super().__init__(verbose)
         self.lambda_lr = lambda_lr
         self.update_freq = update_freq
 
     def _on_step(self) -> bool:
+        # Update lambdas only at a specified frequency to ensure stability
         if self.n_calls % self.update_freq == 0:
+            # --- 1. Collect Costs from all parallel environments ---
             all_costs = {key: [] for key in self.training_env.get_attr('constraint_keys')[0]}
             for info in self.locals.get("infos", []):
                 if 'lagrangian_costs' in info:
-                    for key, cost in info['lagrangian_costs'].items(): all_costs[key].append(cost)
+                    for key, cost in info['lagrangian_costs'].items():
+                        all_costs[key].append(cost)
             
+            # --- 2. Average Costs Across the collected batch ---
             mean_costs = {key: np.mean(values) for key, values in all_costs.items()}
-            current_lambdas = self.training_env.get_attr('lambdas')[0]
-            new_lambdas = {key: max(0, current_lambdas[key] + self.lambda_lr * cost) for key, cost in mean_costs.items()}
             
+            # --- 3. Apply the Gradient Update Rule ---
+            current_lambdas = self.training_env.get_attr('lambdas')[0]
+            new_lambdas = {}
+            for key, cost in mean_costs.items():
+                # The core of the dual update: λ_t+1 = λ_t + α * C(s_t)
+                new_lambda = current_lambdas[key] + self.lambda_lr * cost
+                # Lambdas must always be non-negative
+                new_lambdas[key] = max(0, new_lambda)
+            
+            # --- 4. Update Lambdas in All Parallel Environments ---
             self.training_env.env_method('update_lambdas', new_lambdas)
             
-            for key, value in new_lambdas.items(): self.logger.record(f'lagrangian/lambda_{key}', value)
-            for key, value in mean_costs.items(): self.logger.record(f'lagrangian/cost_{key}', value)
+            # --- 5. Log everything to TensorBoard for monitoring ---
+            for key, value in new_lambdas.items():
+                self.logger.record(f'lagrangian/lambda_{key}', value)
+            for key, value in mean_costs.items():
+                self.logger.record(f'lagrangian/cost_{key}', value)
         return True
 
 class CurriculumLearningCallback(BaseCallback):
@@ -145,3 +165,27 @@ class CurriculumLearningCallback(BaseCallback):
             
             if self.verbose >= 1:
                 print(f"\n🎓 CURRICULUM: Advanced to {new_stage} training stage at step {self.n_calls}")
+
+class LoggedEvalCallback(EvalCallback):
+    """EvalCallback with enhanced logging for evaluation results."""
+    
+    def __init__(self, eval_env, log_path: str = 'eval_logs/', eval_freq: int = 10000, 
+                 best_model_save_path: str = 'best_models/', verbose: int = 1):
+        super(LoggedEvalCallback, self).__init__(
+            eval_env=eval_env,
+            log_path=log_path,
+            eval_freq=eval_freq,
+            best_model_save_path=best_model_save_path,
+            verbose=verbose
+        )
+        
+    def _on_step(self) -> bool:
+        result = super()._on_step()
+        
+        # Additional logging
+        if self.n_calls % self.eval_freq == 0:
+            mean_reward = np.mean(self.last_mean_reward)
+            std_reward = np.std(self.last_mean_reward)
+            self.logger.info(f"[Evaluation at step {self.num_timesteps}] Mean Reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+
+        return result

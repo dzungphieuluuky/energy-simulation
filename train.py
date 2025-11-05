@@ -17,6 +17,7 @@ import multiprocessing
 from typing import Callable, Dict, Any, List, Optional
 from dataclasses import dataclass
 from collections import defaultdict, deque
+import logging
 
 # Stable Baselines3 components
 from stable_baselines3 import PPO, SAC, TD3, DDPG
@@ -25,14 +26,12 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
 from stable_baselines3.common.base_class import BaseAlgorithm
 
+
 # Custom components
 from fiveg_env import FiveGEnv
 from custom_models_sb3 import EnhancedAttentionNetwork
-from callback import ConstraintMonitorCallback, AlgorithmComparisonCallback
-from wrapper import (LagrangianRewardWrapper, 
-                     StrictConstraintWrapper, 
-                     SimplifiedHERForPPO,
-                     GatedRewardWrapper)
+from callback import *
+from wrapper import *
 
 
 @dataclass
@@ -56,7 +55,9 @@ class TrainingPipeline:
     
     def __init__(self, config: TrainingConfig):
         self.config = config
+        self.model = None
         self.hyperparameters = self._setup_hyperparameters()
+        self.setup_logging("training_log.log")
         
     def _setup_hyperparameters(self) -> Dict[str, Any]:
         """Setup algorithm-specific hyperparameters."""
@@ -117,6 +118,11 @@ class TrainingPipeline:
             lagrangian_env = GatedRewardWrapper(base_env)
             monitored_env = Monitor(lagrangian_env)
             return monitored_env
+        def make_lagrange_env():
+            base_env = FiveGEnv(env_config, self.config.max_cells)
+            lagrangian_env = LagrangianRewardWrapper(base_env)
+            monitored_env = Monitor(lagrangian_env)
+            return monitored_env
         
         # Return appropriate environment factory
         if name_env == "her":
@@ -125,6 +131,8 @@ class TrainingPipeline:
             return _make_gated_env
         elif name_env == "strict":
             return _make_strict_constraint_env
+        elif name_env == "lagrange":
+            return make_lagrange_env
     
     def train(self, algorithm: str, total_timesteps: int, n_envs: int = 4, name_env: str = "default") -> BaseAlgorithm:
         """Execute the complete training pipeline."""
@@ -132,21 +140,44 @@ class TrainingPipeline:
         
         # Load training scenarios
         scenarios = self._load_scenarios()
-        
+        self.logger.info(f"Loaded {len(scenarios)} training scenarios.")
+
         # Create vectorized environment
         env_factories = [self.create_environment(scenarios[i % len(scenarios)], seed=i, name_env=name_env) 
                         for i in range(n_envs)]
+        self.logger.info(f"Creating {n_envs} parallel environments.")
+        self.logger.info(f"Using {name_env.upper()} environment wrapper.")
         subproc_vec_env = SubprocVecEnv(env_factories)
         vec_env = VecNormalize(subproc_vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+        self.logger.info(f"Normalized observation: {vec_env.norm_obs}")
+        self.logger.info(f"Normalized reward: {vec_env.norm_reward}")
         
         # Create model
         model_class = {'ppo': PPO, 'sac': SAC, 'td3': TD3, 'ddpg': DDPG}[algorithm]
         model = model_class("MlpPolicy", vec_env, **self.hyperparameters[algorithm])
-        
+        self.model = model
+        self.logger.info(f"Initialized {algorithm.upper()} model.")
+
+        #-----------------------------------------#
+        # Log hyperparameters in a readable format
+        self.logger.info("Model hyperparameters:")
+        for key, value in self.hyperparameters[algorithm].items():
+            if key == 'device':
+                self.logger.info(f"  {key}: {value}")
+            elif key == 'policy_kwargs':
+                self.logger.info(f"  {key}:")
+                self.logger.info(f"    features_extractor: {value['features_extractor_class'].__name__}")
+                self.logger.info(f"    features_dim: {value['features_extractor_kwargs']['features_dim']}")
+                self.logger.info(f"    net_arch: {value['net_arch']}")
+            else:
+                self.logger.info(f"  {key}: {value}")
+
         # Setup callbacks
         callbacks = self._setup_callbacks()
+        self.logger.info(f"Using the following callbacks: {json.dumps([type(cb).__name__ for cb in callbacks], indent=4)}")
         
         # Train model
+        self.logger.info("Number of timesteps: {}".format(total_timesteps))
         model.learn(
             total_timesteps=total_timesteps,
             callback=callbacks,
@@ -181,13 +212,14 @@ class TrainingPipeline:
         eval_env = DummyVecEnv([self.create_environment({}, seed=999)])
         callbacks = [
             CheckpointCallback(save_freq=50000, save_path='checkpoints/'),
-            EvalCallback(
+            LoggedEvalCallback(
                 eval_env=VecNormalize(eval_env, norm_obs=True, norm_reward=True, clip_obs=10.0),
                 best_model_save_path='best_models/',
                 log_path='eval_logs/',
-                eval_freq=10000
+                eval_freq=10000,
             ),
             ConstraintMonitorCallback(verbose=1),
+            LambdaUpdateCallback(lambda_lr=0.01, update_freq=self.model.n_steps),
         ]
         return callbacks
     
@@ -198,6 +230,15 @@ class TrainingPipeline:
         model_path = f"trained_models/{algorithm}_final_{timestamp}.zip"
         model.save(model_path)
         print(f"💾 Model saved to: {model_path}")
+    
+    def setup_logging(self, log_file):
+        self.logger = logging.getLogger('RLAgentTraining')
+        self.logger.setLevel(logging.INFO)
+        if self.logger.hasHandlers(): self.logger.handlers.clear()
+        handler = logging.FileHandler(log_file)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        self.logger.addHandler(handler)
+        self.logger.addHandler(logging.StreamHandler())
 
 
 def main():
