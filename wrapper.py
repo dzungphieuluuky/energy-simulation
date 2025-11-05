@@ -1,4 +1,6 @@
 import gymnasium as gym
+import numpy as np
+from collections import deque
 from typing import List, Dict, Any
 from fiveg_env import FiveGEnv
 
@@ -122,3 +124,517 @@ class StrictConstraintWrapper(gym.Wrapper):
             efficiency = 1.0 - (total_energy / max_energy)
             return max(0.0, efficiency)
         return 0.0
+
+"""
+Enhanced Hindsight Experience Replay (HER) for PPO
+Designed specifically for zero-reward-on-violation training strategy
+
+Key improvements:
+1. Multi-scale progress tracking (short/medium/long term)
+2. Constraint-specific curriculum learning
+3. Milestone-based reward shaping
+4. Adaptive reward scaling based on training phase
+5. Better handling of partial constraint satisfaction
+"""
+
+import gym
+import numpy as np
+from collections import deque
+from typing import Dict, Any, Tuple
+
+
+class SimplifiedHERForPPO(gym.Wrapper):
+    """
+    Enhanced HER wrapper for PPO with zero-reward-on-violation strategy.
+    
+    Philosophy:
+    - Original reward: 0 for any violation, positive only when all constraints met
+    - HER reward: Provide intermediate feedback for PROGRESS toward constraints
+    - This helps agent learn constraint boundaries faster
+    
+    Key features:
+    - Multi-timescale progress tracking (short/medium/long)
+    - Adaptive reward scaling based on training stage
+    - Milestone bonuses for achieving constraint satisfaction
+    - Curriculum learning: focus on hardest constraints first
+    """
+    
+    def __init__(self, env, enable_curriculum: bool = True, 
+                 enable_milestones: bool = True,
+                 progress_weight: float = 0.3,
+                 milestone_weight: float = 0.5):
+        """
+        Args:
+            env: Base environment
+            enable_curriculum: Enable adaptive curriculum learning
+            enable_milestones: Enable milestone bonuses
+            progress_weight: Weight for progress rewards (0-1)
+            milestone_weight: Weight for milestone rewards (0-1)
+        """
+        super().__init__(env)
+        
+        # Progress tracking at multiple timescales
+        self.constraint_progress = {
+            'drop_rate': {
+                'short': deque(maxlen=10),   # Last 10 steps
+                'medium': deque(maxlen=50),  # Last 50 steps
+                'long': deque(maxlen=200)    # Last 200 steps
+            },
+            'latency': {
+                'short': deque(maxlen=10),
+                'medium': deque(maxlen=50),
+                'long': deque(maxlen=200)
+            },
+            'resources': {
+                'short': deque(maxlen=10),
+                'medium': deque(maxlen=50),
+                'long': deque(maxlen=200)
+            }
+        }
+        
+        # Training statistics
+        self.total_steps = 0
+        self.episode_steps = 0
+        self.total_episodes = 0
+        self.consecutive_satisfactions = {
+            'drop_rate': 0,
+            'latency': 0,
+            'resources': 0,
+            'all': 0
+        }
+        
+        # Constraint difficulty tracking (for curriculum)
+        self.constraint_difficulty = {
+            'drop_rate': 1.0,
+            'latency': 1.0,
+            'resources': 1.0
+        }
+        
+        # Milestone tracking
+        self.milestones_reached = {
+            'first_drop_rate_satisfy': False,
+            'first_latency_satisfy': False,
+            'first_resource_satisfy': False,
+            'first_all_satisfy': False,
+            'sustained_10_steps': False,
+            'sustained_50_steps': False,
+            'sustained_100_steps': False
+        }
+        
+        # Configuration
+        self.enable_curriculum = enable_curriculum
+        self.enable_milestones = enable_milestones
+        self.progress_weight = progress_weight
+        self.milestone_weight = milestone_weight
+        
+        # Adaptive scaling based on training stage
+        self.training_stage = 'early'  # early, middle, late
+        self.stage_thresholds = {
+            'early_to_middle': 50000,  # Switch after 50k steps
+            'middle_to_late': 200000   # Switch after 200k steps
+        }
+        
+        print(f"\n{'='*70}")
+        print("SimplifiedHERForPPO Initialized")
+        print(f"{'='*70}")
+        print(f"  Curriculum Learning: {'Enabled' if enable_curriculum else 'Disabled'}")
+        print(f"  Milestone Rewards: {'Enabled' if enable_milestones else 'Disabled'}")
+        print(f"  Progress Weight: {progress_weight}")
+        print(f"  Milestone Weight: {milestone_weight}")
+        print(f"{'='*70}\n")
+    
+    def reset(self, **kwargs):
+        """Reset environment and tracking."""
+        obs, info = self.env.reset(**kwargs)
+        
+        self.episode_steps = 0
+        self.total_episodes += 1
+        
+        # Update training stage
+        self._update_training_stage()
+        
+        return obs, info
+    
+    def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """
+        Execute step with HER-enhanced rewards.
+        
+        Reward structure:
+        1. Original reward (0 if violated, positive if satisfied + energy efficient)
+        2. Progress reward (for moving toward constraint satisfaction)
+        3. Milestone reward (for achieving new goals)
+        4. Curriculum bonus (for mastering difficult constraints)
+        """
+        obs, original_reward, terminated, truncated, info = self.env.step(action)
+        
+        self.total_steps += 1
+        self.episode_steps += 1
+        
+        # Get current metrics
+        metrics = self.env.compute_metrics()
+        
+        # ================================================================
+        # STEP 1: Compute constraint satisfaction progress
+        # ================================================================
+        drop_progress = self._compute_drop_rate_progress(metrics)
+        latency_progress = self._compute_latency_progress(metrics)
+        resource_progress = self._compute_resource_progress(metrics)
+        
+        # Store in all timescales
+        for timescale in ['short', 'medium', 'long']:
+            self.constraint_progress['drop_rate'][timescale].append(drop_progress)
+            self.constraint_progress['latency'][timescale].append(latency_progress)
+            self.constraint_progress['resources'][timescale].append(resource_progress)
+        
+        # Update consecutive satisfaction counters
+        self._update_satisfaction_counters(metrics)
+        
+        # ================================================================
+        # STEP 2: Compute HER progress rewards
+        # ================================================================
+        progress_reward = self._compute_progress_reward(
+            drop_progress, latency_progress, resource_progress
+        )
+        
+        # ================================================================
+        # STEP 3: Compute milestone rewards
+        # ================================================================
+        milestone_reward = 0.0
+        if self.enable_milestones:
+            milestone_reward = self._compute_milestone_reward(metrics)
+        
+        # ================================================================
+        # STEP 4: Compute curriculum bonus
+        # ================================================================
+        curriculum_bonus = 0.0
+        if self.enable_curriculum:
+            curriculum_bonus = self._compute_curriculum_bonus(
+                drop_progress, latency_progress, resource_progress
+            )
+        
+        # ================================================================
+        # STEP 5: Combine rewards with adaptive weighting
+        # ================================================================
+        # Scale HER components based on training stage
+        stage_multipliers = {
+            'early': 1.0,    # Full HER assistance early
+            'middle': 0.7,   # Reduce HER as agent improves
+            'late': 0.4      # Minimal HER when converged
+        }
+        
+        her_multiplier = stage_multipliers[self.training_stage]
+        
+        # Combine all reward components
+        her_reward = (
+            progress_reward * self.progress_weight * her_multiplier +
+            milestone_reward * self.milestone_weight +
+            curriculum_bonus * 0.2 * her_multiplier
+        )
+        
+        total_reward = original_reward + her_reward
+        
+        # ================================================================
+        # STEP 6: Update constraint difficulty (curriculum learning)
+        # ================================================================
+        if self.enable_curriculum and self.episode_steps % 10 == 0:
+            self._update_constraint_difficulty()
+        
+        # ================================================================
+        # STEP 7: Add HER info to info dict
+        # ================================================================
+        info['her_metrics'] = {
+            'progress_reward': float(progress_reward),
+            'milestone_reward': float(milestone_reward),
+            'curriculum_bonus': float(curriculum_bonus),
+            'total_her_reward': float(her_reward),
+            'training_stage': self.training_stage,
+            'constraint_difficulty': self.constraint_difficulty.copy(),
+            'drop_progress': float(drop_progress),
+            'latency_progress': float(latency_progress),
+            'resource_progress': float(resource_progress),
+        }
+        
+        # Log milestone achievements
+        if terminated or truncated:
+            self._log_episode_summary(info)
+        
+        return obs, total_reward, terminated, truncated, info
+    
+    def _compute_drop_rate_progress(self, metrics: Dict) -> float:
+        """
+        Compute progress toward satisfying drop rate constraint.
+        Returns value between 0 (far from goal) and 1 (goal achieved).
+        """
+        p = self.env.sim_params
+        
+        if metrics['avg_drop_rate'] <= p.dropCallThreshold:
+            return 1.0  # Perfect satisfaction
+        
+        # Compute normalized distance from threshold
+        # Use exponential decay for smoother progress signal
+        violation_ratio = (metrics['avg_drop_rate'] - p.dropCallThreshold) / p.dropCallThreshold
+        
+        # Exponential decay: progress = exp(-k * violation)
+        # k=2 gives good sensitivity
+        progress = np.exp(-2.0 * violation_ratio)
+        
+        return float(max(0.0, min(1.0, progress)))
+    
+    def _compute_latency_progress(self, metrics: Dict) -> float:
+        """Compute progress toward satisfying latency constraint."""
+        p = self.env.sim_params
+        
+        if metrics['avg_latency'] <= p.latencyThreshold:
+            return 1.0
+        
+        violation_ratio = (metrics['avg_latency'] - p.latencyThreshold) / p.latencyThreshold
+        progress = np.exp(-2.0 * violation_ratio)
+        
+        return float(max(0.0, min(1.0, progress)))
+    
+    def _compute_resource_progress(self, metrics: Dict) -> float:
+        """
+        Compute progress toward satisfying resource constraints.
+        Considers both CPU and PRB violations.
+        """
+        total_violations = metrics['cpu_violations'] + metrics['prb_violations']
+        
+        if total_violations == 0:
+            return 1.0
+        
+        # Normalize by maximum possible violations
+        max_possible = 2 * self.env.n_cells
+        violation_ratio = total_violations / max_possible
+        
+        # Exponential decay
+        progress = np.exp(-3.0 * violation_ratio)  # k=3 for sharper response
+        
+        return float(max(0.0, min(1.0, progress)))
+    
+    def _compute_progress_reward(self, drop_progress: float, 
+                                 latency_progress: float, 
+                                 resource_progress: float) -> float:
+        """
+        Compute reward for progress across all constraints.
+        
+        Key insight: Reward IMPROVEMENT, not just absolute progress.
+        This encourages agent to keep improving.
+        """
+        progress_reward = 0.0
+        
+        # Check each constraint for improvement
+        improvements = []
+        
+        # Drop rate improvement
+        if len(self.constraint_progress['drop_rate']['medium']) > 1:
+            prev_avg = np.mean(list(self.constraint_progress['drop_rate']['medium'])[:-1])
+            if drop_progress > prev_avg + 0.01:  # Significant improvement
+                improvement = drop_progress - prev_avg
+                improvements.append(('drop_rate', improvement))
+                progress_reward += improvement * 0.5
+        
+        # Latency improvement
+        if len(self.constraint_progress['latency']['medium']) > 1:
+            prev_avg = np.mean(list(self.constraint_progress['latency']['medium'])[:-1])
+            if latency_progress > prev_avg + 0.01:
+                improvement = latency_progress - prev_avg
+                improvements.append(('latency', improvement))
+                progress_reward += improvement * 0.5
+        
+        # Resource improvement
+        if len(self.constraint_progress['resources']['medium']) > 1:
+            prev_avg = np.mean(list(self.constraint_progress['resources']['medium'])[:-1])
+            if resource_progress > prev_avg + 0.01:
+                improvement = resource_progress - prev_avg
+                improvements.append(('resources', improvement))
+                progress_reward += improvement * 0.5
+        
+        # Bonus for satisfying individual constraints
+        satisfaction_bonus = 0.0
+        if drop_progress >= 0.99:
+            satisfaction_bonus += 0.3
+        if latency_progress >= 0.99:
+            satisfaction_bonus += 0.3
+        if resource_progress >= 0.99:
+            satisfaction_bonus += 0.3
+        
+        # Bonus for satisfying ALL constraints simultaneously
+        if drop_progress >= 0.99 and latency_progress >= 0.99 and resource_progress >= 0.99:
+            satisfaction_bonus += 0.5  # Extra bonus for full satisfaction
+        
+        progress_reward += satisfaction_bonus
+        
+        return progress_reward
+    
+    def _compute_milestone_reward(self, metrics: Dict) -> float:
+        """
+        Compute one-time milestone rewards for achieving goals.
+        This helps mark important learning moments.
+        """
+        milestone_reward = 0.0
+        p = self.env.sim_params
+        
+        # First-time achievements (one-time bonuses)
+        if not self.milestones_reached['first_drop_rate_satisfy']:
+            if metrics['avg_drop_rate'] <= p.dropCallThreshold:
+                milestone_reward += 2.0
+                self.milestones_reached['first_drop_rate_satisfy'] = True
+                print(f"\n🎯 MILESTONE: First drop rate satisfaction at step {self.total_steps}!")
+        
+        if not self.milestones_reached['first_latency_satisfy']:
+            if metrics['avg_latency'] <= p.latencyThreshold:
+                milestone_reward += 2.0
+                self.milestones_reached['first_latency_satisfy'] = True
+                print(f"\n🎯 MILESTONE: First latency satisfaction at step {self.total_steps}!")
+        
+        if not self.milestones_reached['first_resource_satisfy']:
+            if metrics['cpu_violations'] == 0 and metrics['prb_violations'] == 0:
+                milestone_reward += 2.0
+                self.milestones_reached['first_resource_satisfy'] = True
+                print(f"\n🎯 MILESTONE: First resource satisfaction at step {self.total_steps}!")
+        
+        if not self.milestones_reached['first_all_satisfy']:
+            all_satisfied = (
+                metrics['avg_drop_rate'] <= p.dropCallThreshold and
+                metrics['avg_latency'] <= p.latencyThreshold and
+                metrics['cpu_violations'] == 0 and
+                metrics['prb_violations'] == 0
+            )
+            if all_satisfied:
+                milestone_reward += 5.0
+                self.milestones_reached['first_all_satisfy'] = True
+                print(f"\n🎉 MAJOR MILESTONE: First FULL constraint satisfaction at step {self.total_steps}!")
+        
+        # Sustained satisfaction milestones
+        if not self.milestones_reached['sustained_10_steps']:
+            if self.consecutive_satisfactions['all'] >= 10:
+                milestone_reward += 3.0
+                self.milestones_reached['sustained_10_steps'] = True
+                print(f"\n⭐ MILESTONE: 10 consecutive satisfied steps at {self.total_steps}!")
+        
+        if not self.milestones_reached['sustained_50_steps']:
+            if self.consecutive_satisfactions['all'] >= 50:
+                milestone_reward += 5.0
+                self.milestones_reached['sustained_50_steps'] = True
+                print(f"\n🌟 MILESTONE: 50 consecutive satisfied steps at {self.total_steps}!")
+        
+        if not self.milestones_reached['sustained_100_steps']:
+            if self.consecutive_satisfactions['all'] >= 100:
+                milestone_reward += 10.0
+                self.milestones_reached['sustained_100_steps'] = True
+                print(f"\n✨ MAJOR MILESTONE: 100 consecutive satisfied steps at {self.total_steps}!")
+        
+        return milestone_reward
+    
+    def _compute_curriculum_bonus(self, drop_progress: float, 
+                                  latency_progress: float, 
+                                  resource_progress: float) -> float:
+        """
+        Adaptive curriculum learning: reward progress on HARDEST constraints more.
+        This focuses agent's attention on bottlenecks.
+        """
+        # Weight by difficulty (harder constraints get more reward)
+        weighted_reward = (
+            drop_progress * self.constraint_difficulty['drop_rate'] +
+            latency_progress * self.constraint_difficulty['latency'] +
+            resource_progress * self.constraint_difficulty['resources']
+        ) / 3.0
+        
+        return weighted_reward * 0.5  # Scale appropriately
+    
+    def _update_satisfaction_counters(self, metrics: Dict):
+        """Update consecutive satisfaction counters."""
+        p = self.env.sim_params
+        
+        # Individual constraints
+        if metrics['avg_drop_rate'] <= p.dropCallThreshold:
+            self.consecutive_satisfactions['drop_rate'] += 1
+        else:
+            self.consecutive_satisfactions['drop_rate'] = 0
+        
+        if metrics['avg_latency'] <= p.latencyThreshold:
+            self.consecutive_satisfactions['latency'] += 1
+        else:
+            self.consecutive_satisfactions['latency'] = 0
+        
+        if metrics['cpu_violations'] == 0 and metrics['prb_violations'] == 0:
+            self.consecutive_satisfactions['resources'] += 1
+        else:
+            self.consecutive_satisfactions['resources'] = 0
+        
+        # All constraints
+        all_satisfied = (
+            metrics['avg_drop_rate'] <= p.dropCallThreshold and
+            metrics['avg_latency'] <= p.latencyThreshold and
+            metrics['cpu_violations'] == 0 and
+            metrics['prb_violations'] == 0
+        )
+        
+        if all_satisfied:
+            self.consecutive_satisfactions['all'] += 1
+        else:
+            self.consecutive_satisfactions['all'] = 0
+    
+    def _update_constraint_difficulty(self):
+        """
+        Update difficulty estimate for each constraint.
+        Difficulty = 1 - average satisfaction rate
+        Higher difficulty = harder to satisfy = more reward for progress
+        """
+        for constraint_name in ['drop_rate', 'latency', 'resources']:
+            if len(self.constraint_progress[constraint_name]['long']) > 10:
+                # Average progress over long window
+                avg_progress = np.mean(list(self.constraint_progress[constraint_name]['long']))
+                
+                # Difficulty is inverse of progress
+                difficulty = 1.0 - avg_progress
+                
+                # Smooth update (EMA)
+                alpha = 0.1
+                self.constraint_difficulty[constraint_name] = (
+                    (1 - alpha) * self.constraint_difficulty[constraint_name] +
+                    alpha * difficulty
+                )
+                
+                # Clamp to reasonable range
+                self.constraint_difficulty[constraint_name] = max(0.5, min(2.0, 
+                    self.constraint_difficulty[constraint_name]))
+    
+    def _update_training_stage(self):
+        """Update training stage based on total steps."""
+        if self.total_steps < self.stage_thresholds['early_to_middle']:
+            self.training_stage = 'early'
+        elif self.total_steps < self.stage_thresholds['middle_to_late']:
+            if self.training_stage == 'early':
+                self.training_stage = 'middle'
+                print(f"\n{'='*70}")
+                print(f"Training Stage: EARLY → MIDDLE (step {self.total_steps})")
+                print(f"  Reducing HER assistance to 70%")
+                print(f"{'='*70}\n")
+        else:
+            if self.training_stage != 'late':
+                self.training_stage = 'late'
+                print(f"\n{'='*70}")
+                print(f"Training Stage: MIDDLE → LATE (step {self.total_steps})")
+                print(f"  Reducing HER assistance to 40%")
+                print(f"{'='*70}\n")
+    
+    def _log_episode_summary(self, info: Dict):
+        """Log episode summary with HER metrics."""
+        if self.total_episodes % 10 == 0:  # Log every 10 episodes
+            print(f"\n{'='*70}")
+            print(f"HER Episode {self.total_episodes} Summary (Total steps: {self.total_steps})")
+            print(f"{'='*70}")
+            print(f"  Training Stage: {self.training_stage.upper()}")
+            print(f"  Consecutive Satisfactions:")
+            print(f"    Drop Rate: {self.consecutive_satisfactions['drop_rate']}")
+            print(f"    Latency: {self.consecutive_satisfactions['latency']}")
+            print(f"    Resources: {self.consecutive_satisfactions['resources']}")
+            print(f"    ALL: {self.consecutive_satisfactions['all']}")
+            
+            print(f"  Constraint Difficulty (curriculum):")
+            for name, diff in self.constraint_difficulty.items():
+                print(f"    {name}: {diff:.2f}")
+            
+            print(f"  Milestones Reached: {sum(self.milestones_reached.values())}/{len(self.milestones_reached)}")
+            print(f"{'='*70}\n")

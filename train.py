@@ -29,7 +29,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from fiveg_env import FiveGEnv
 from custom_models_sb3 import EnhancedAttentionNetwork
 from callback import ConstraintMonitorCallback, AlgorithmComparisonCallback
-from wrapper import LagrangianRewardWrapper, StrictConstraintWrapper
+from wrapper import LagrangianRewardWrapper, StrictConstraintWrapper, SimplifiedHERForPPO
 
 
 @dataclass
@@ -97,16 +97,26 @@ class TrainingPipeline:
         
         return {algo: {**base_params, **params} for algo, params in algorithm_params.items()}
     
-    def create_environment(self, env_config: Dict[str, Any], seed: int) -> Callable:
+    def create_environment(self, env_config: Dict[str, Any], seed: int, name_env: str = "default") -> Callable:
         """Create environment factory function."""
         def _make_env() -> gym.Env:
             base_env = FiveGEnv(env_config, self.config.max_cells)
             wrapped_env = StrictConstraintWrapper(base_env)
             monitored_env = Monitor(wrapped_env)
             return monitored_env
-        return _make_env
+        def _make_her_env():
+            base_env = FiveGEnv(env_config, self.config.max_cells)
+            simple_her_env = SimplifiedHERForPPO(base_env)
+            monitored_env = Monitor(simple_her_env)
+            return monitored_env
+        
+        # Return appropriate environment factory
+        if name_env == "her":
+            return _make_her_env
+        else:
+            return _make_env
     
-    def train(self, algorithm: str, total_timesteps: int, n_envs: int = 4):
+    def train(self, algorithm: str, total_timesteps: int, n_envs: int = 4, name_env: str = "default") -> BaseAlgorithm:
         """Execute the complete training pipeline."""
         print(f"🚀 Starting enhanced training with {algorithm.upper()}")
         
@@ -114,7 +124,7 @@ class TrainingPipeline:
         scenarios = self._load_scenarios()
         
         # Create vectorized environment
-        env_factories = [self.create_environment(scenarios[i % len(scenarios)], seed=i) 
+        env_factories = [self.create_environment(scenarios[i % len(scenarios)], seed=i, name_env=name_env) 
                         for i in range(n_envs)]
         subproc_vec_env = SubprocVecEnv(env_factories)
         vec_env = VecNormalize(subproc_vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
@@ -184,9 +194,10 @@ def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(description="Enhanced 5G Training Pipeline")
     parser.add_argument("--algorithm", "-a", type=str, default="ppo", 
-                       choices=['ppo', 'sac', 'td3', 'ddpg'])
-    parser.add_argument("--timesteps", "-t", type=int, default=1000000)
-    parser.add_argument("--envs", "-e", type=int, default=4)
+                       choices=['ppo', 'sac', 'td3', 'ddpg'], help="RL algorithm to use")
+    parser.add_argument("--timesteps", "-t", type=int, default=1000000, help="Total training timesteps")
+    parser.add_argument("--envs", "-e", type=int, default=4, help="Number of parallel environments")
+    parser.add_argument("--name_env", "-n", type=str, default="default", help="Environment type: 'default' or 'her'")
     
     args = parser.parse_args()
     
@@ -195,7 +206,10 @@ def main():
     
     # Create and execute training pipeline
     pipeline = TrainingPipeline(config)
-    pipeline.train(args.algorithm, args.timesteps, args.envs)
+
+    # Display selected settings
+    print("Algorithm selected:", args.algorithm.upper())
+    pipeline.train(args.algorithm, args.timesteps, args.envs, args.name_env)
 
 
 if __name__ == "__main__":
