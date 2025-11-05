@@ -52,16 +52,17 @@ def calculate_rsrp_batch(ue_positions, cell_positions, tx_powers, frequency,
                          ue_ids, current_time, seed, min_tx_powers):
     """
     Vectorized RSRP calculation for all UE-cell pairs
+    FIX: Only parallelize outer loop to avoid race conditions
     """
     num_ues = ue_positions.shape[0]
     num_cells = cell_positions.shape[0]
     rsrp_matrix = np.zeros((num_ues, num_cells), dtype=np.float64)
     
-    for ue_idx in prange(num_ues):
+    for ue_idx in prange(num_ues):  # Parallel over UEs
         ue_x, ue_y = ue_positions[ue_idx]
         ue_id = ue_ids[ue_idx]
         
-        for cell_idx in prange(num_cells):
+        for cell_idx in range(num_cells):  # FIX: Sequential over cells (was prange)
             cell_x, cell_y = cell_positions[cell_idx]
             
             # Calculate distance
@@ -354,43 +355,36 @@ def calculate_cell_latency(base_latency, load_ratio, num_ues,
 def process_measurements_batch(rsrp_matrix, tx_powers, min_tx_powers, 
                                rsrp_measurement_threshold):
     """
-    Takes a matrix of RSRP values and calculates RSRQ and SINR matrices.
-    This function contains all the per-pair logic that can be JIT-compiled.
+    Process RSRP matrix to compute RSRQ and SINR matrices
+    FIX: Only parallelize outer loop
     """
     num_ues, num_cells = rsrp_matrix.shape
-    
-    # Create empty matrices to store the results
     rsrq_matrix = np.full((num_ues, num_cells), np.nan, dtype=np.float64)
     sinr_matrix = np.full((num_ues, num_cells), np.nan, dtype=np.float64)
 
-    for ue_idx in prange(num_ues):  # Use prange for potential parallel execution
-        for cell_idx in prange(num_cells):
+    for ue_idx in prange(num_ues):  # Parallel over UEs
+        for cell_idx in range(num_cells):  # FIX: Sequential over cells (was prange)
             rsrp = rsrp_matrix[ue_idx, cell_idx]
 
-            # Only process measurements that are strong enough
             if rsrp >= (rsrp_measurement_threshold - 5.0):
-                # --- Replicate the RSRQ/SINR logic from the original numba_utils ---
                 # RSSI calculation
-                # Note: To avoid seeding issues inside a JIT function, we use small constants
-                # for random variation. This is a common pattern for performance.
                 rssi = rsrp + 10.0 * math.log10(12.0) + (np.random.randn() * 0.5)
         
-                # RSRQ calculation (clamped between -20 and -3 dB)
+                # RSRQ calculation (clamped)
                 rsrq = 10.0 * math.log10(12.0) + rsrp - rssi
                 rsrq = max(-20.0, min(-3.0, rsrq))
                 
                 # SINR calculation
-                base_sinr = rsrp - (-110.0)  # Noise floor at -110 dBm
+                base_sinr = rsrp - (-110.0)
                 sinr = base_sinr + (np.random.randn() * 2.0)
                 
-                # --- Replicate the SINR penalty logic from simulation_logic ---
+                # SINR penalty for low power
                 tx_power = tx_powers[cell_idx]
                 min_tx_power = min_tx_powers[cell_idx]
                 if tx_power <= min_tx_power + 2.0:
                     sinr_penalty = (min_tx_power + 2.0 - tx_power) * 6.0
                     sinr = sinr - sinr_penalty
                 
-                # Store the final results in the matrices
                 rsrq_matrix[ue_idx, cell_idx] = rsrq
                 sinr_matrix[ue_idx, cell_idx] = sinr
                 

@@ -104,18 +104,49 @@ class FiveGEnv(gym.Env):
             
         return np.concatenate([np.array(sim_features, dtype=np.float32), np.array(network_features, dtype=np.float32), cell_features]).astype(np.float32)
 
-    def _get_ue_stats_for_cell(self, cell_id: int) -> Dict[str, Any]:
-        ue_metrics = [(ue.rsrp, ue.rsrq, ue.sinr, ue.traffic_demand) for ue in self.ues if ue.serving_cell == cell_id and not ue.is_dropped]
-        if not ue_metrics: return {'active_sessions': 0.0, 'total_traffic': 0.0, 'rsrp_stats': [-140.0]*4, 'rsrq_stats': [-20.0]*4, 'sinr_stats': [-20.0]*4}
-        
-        rsrps, rsrqs, sinrs, traffic = zip(*ue_metrics)
-        def safe_stats(data, default_val):
-            arr = np.array(data, dtype=np.float32)
-            valid = arr[np.isfinite(arr)]
-            return [float(np.mean(valid)), float(np.min(valid)), float(np.max(valid)), float(np.std(valid))] if valid.size > 0 else [default_val]*4
-        
-        return {'active_sessions': float(len(ue_metrics)), 'total_traffic': float(np.sum(traffic)),
-                'rsrp_stats': safe_stats(rsrps, -140.0), 'rsrq_stats': safe_stats(rsrqs, -20.0), 'sinr_stats': safe_stats(sinrs, -20.0)}
+def _get_ue_stats_for_cell(self, cell_id: int) -> Dict[str, Any]:
+    """Get UE statistics for a specific cell"""
+    # FIX: Add explicit check for is_dropped attribute
+    for ue in self.ues:
+        if not hasattr(ue, 'is_dropped'):
+            raise AttributeError(f"UE {ue.id} missing 'is_dropped' attribute!")
+    
+    ue_metrics = [
+        (ue.rsrp, ue.rsrq, ue.sinr, ue.traffic_demand) 
+        for ue in self.ues 
+        if ue.serving_cell == cell_id and not ue.is_dropped
+    ]
+    
+    if not ue_metrics:
+        return {
+            'active_sessions': 0.0, 
+            'total_traffic': 0.0, 
+            'rsrp_stats': [-140.0]*4, 
+            'rsrq_stats': [-20.0]*4, 
+            'sinr_stats': [-20.0]*4
+        }
+    
+    rsrps, rsrqs, sinrs, traffic = zip(*ue_metrics)
+    
+    def safe_stats(data, default_val):
+        arr = np.array(data, dtype=np.float32)
+        valid = arr[np.isfinite(arr)]
+        if valid.size > 0:
+            return [
+                float(np.mean(valid)), 
+                float(np.min(valid)), 
+                float(np.max(valid)), 
+                float(np.std(valid))
+            ]
+        return [default_val]*4
+    
+    return {
+        'active_sessions': float(len(ue_metrics)), 
+        'total_traffic': float(np.sum(traffic)),
+        'rsrp_stats': safe_stats(rsrps, -140.0), 
+        'rsrq_stats': safe_stats(rsrqs, -20.0), 
+        'sinr_stats': safe_stats(sinrs, -20.0)
+    }
 
     def compute_metrics(self) -> Dict[str, float]:
         if not self.cells: return {k: 0.0 for k in ["total_energy", "active_cells", "avg_drop_rate", "avg_latency", "total_traffic", "connected_ues", "connection_rate", "cpu_violations", "prb_violations", "max_cpu_usage", "max_prb_usage", "kpi_violations", "total_tx_power", "avg_power_ratio"]}
@@ -153,6 +184,10 @@ class FiveGEnv(gym.Env):
 
         
         self._setup_scenario(self.seed)
+
+        for ue in self.ues:
+            ue.is_dropped = False
+
         self.ues, self.cells = run_simulation_step(self.ues, self.cells, self.sim_params, self.time_step_duration, -1, self.seed)
         return self._get_obs(), {}
 

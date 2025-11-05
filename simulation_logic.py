@@ -267,19 +267,24 @@ def check_handover_events(ues: List[UE], cells: List[Cell], current_time: float,
     
     for ue in ues:
         serving_cell = next((c for c in cells if c.id == ue.serving_cell), None)
-        if not serving_cell: continue
+        if not serving_cell:
+            continue
         
-        # Emergency Handover / Connection Recovery
+        # Emergency Handover
         if not np.isnan(ue.rsrp) and ue.rsrp < sim_params.rsrpServingThreshold:
             best_cell = _find_best_cell_for_connection(ue, sim_params.rsrpTargetThreshold, cells)
             if best_cell:
                 ue.serving_cell = best_cell['cell_id']
-                ue.rsrp, ue.rsrq, ue.sinr = best_cell['rsrp'], best_cell['rsrq'], best_cell['sinr']
+                ue.rsrp = best_cell['rsrp']
+                ue.rsrq = best_cell['rsrq']
+                ue.sinr = best_cell['sinr']
+                ue.is_dropped = False  # FIX: Clear dropped flag on reconnection
             else:
                 ue.serving_cell = None
+                ue.is_dropped = True  # FIX: Mark as dropped
             continue
         
-        # A3 Handover Logic
+        # A3 Handover (find best neighbor)
         best_neighbor = None
         max_rsrp = -np.inf
         for neighbor in ue.neighbor_measurements:
@@ -287,29 +292,55 @@ def check_handover_events(ues: List[UE], cells: List[Cell], current_time: float,
                 max_rsrp = neighbor.rsrp
                 best_neighbor = neighbor
         
-        if best_neighbor and best_neighbor.rsrp > (ue.rsrp + serving_cell.a3_offset) and best_neighbor.rsrp >= sim_params.rsrpTargetThreshold:
-            if ue.ho_timer == 0: ue.ho_timer = current_time
+        # Check A3 condition
+        if (best_neighbor and 
+            best_neighbor.rsrp > (ue.rsrp + serving_cell.a3_offset) and 
+            best_neighbor.rsrp >= sim_params.rsrpTargetThreshold):
             
+            # Start timer
+            if ue.ho_timer == 0:
+                ue.ho_timer = current_time
+            
+            # Check if TTT expired
             if (current_time - ue.ho_timer) >= serving_cell.ttt:
                 target_cell = next((c for c in cells if c.id == best_neighbor.cell_id), None)
-                if not target_cell: continue
+                if not target_cell:
+                    continue
                 
-                ho_success = _evaluate_handover_success(ue, best_neighbor, serving_cell, target_cell, current_time, seed)
+                # Evaluate handover success
+                ho_success = _evaluate_handover_success(
+                    ue, best_neighbor, serving_cell, target_cell, current_time, seed
+                )
+                
+                # Create event
                 ho_event = HandoverEvent(
                     ue_id=ue.id, cell_source=serving_cell.id, cell_target=best_neighbor.cell_id,
-                    rsrp_source=ue.rsrp, rsrp_target=best_neighbor.rsrp, rsrq_source=ue.rsrq, rsrq_target=best_neighbor.rsrq,
-                    sinr_source=ue.sinr, sinr_target=best_neighbor.sinr, a3_offset=serving_cell.a3_offset,
-                    ttt=serving_cell.ttt, ho_success=ho_success, timestamp=current_time
+                    rsrp_source=ue.rsrp, rsrp_target=best_neighbor.rsrp,
+                    rsrq_source=ue.rsrq, rsrq_target=best_neighbor.rsrq,
+                    sinr_source=ue.sinr, sinr_target=best_neighbor.sinr,
+                    a3_offset=serving_cell.a3_offset, ttt=serving_cell.ttt,
+                    ho_success=ho_success, timestamp=current_time
                 )
+                
                 handover_events.append(ho_event)
                 ue.handover_history.append(ho_event)
                 
+                # Execute handover if successful
                 if ho_success:
                     ue.serving_cell = best_neighbor.cell_id
-                    ue.rsrp, ue.rsrq, ue.sinr = best_neighbor.rsrp, best_neighbor.rsrq, best_neighbor.sinr
+                    ue.rsrp = best_neighbor.rsrp
+                    ue.rsrq = best_neighbor.rsrq
+                    ue.sinr = best_neighbor.sinr
+                    # FIX: UE successfully handed over, not dropped
+                    ue.is_dropped = False
+                else:
+                    # FIX: Failed handover might lead to drop
+                    # (MATLAB doesn't explicitly handle this, but it's implicit)
+                    pass
                 
                 ue.ho_timer = 0
         else:
+            # A3 condition not met - reset timer
             ue.ho_timer = 0
             
     return handover_events, ues
@@ -340,33 +371,59 @@ def _evaluate_handover_success(ue: UE, neighbor: NeighborMeasurement,
 
 def handle_disconnected_ues(ues: List[UE], cells: List[Cell], sim_params: SimulationParams,
                            time_step: float, current_time: float) -> List[UE]:
-    """Handle disconnected UEs and connection/disconnection timers"""
+    """Handle disconnected UEs and connection/disconnection timers - MATLAB-exact logic"""
     disconnection_timeout, connection_timeout, hysteresis = 5.0, 2.0, 3.0
     
     for ue in ues:
         if ue.serving_cell is not None:
+            # Check signal quality
             if not np.isnan(ue.rsrp) and ue.rsrp < (sim_params.rsrpServingThreshold - hysteresis):
-                ue.disconnection_timer = max(0, ue.disconnection_timer - time_step)
+                # FIX: MATLAB-style timer logic - check if 0 FIRST, then set
                 if ue.disconnection_timer == 0:
-                    ue.serving_cell = None
-                    ue.rsrp = ue.rsrq = ue.sinr = np.nan
-                    ue.session_active = False
-                    ue.traffic_demand = 0
-                    ue.drop_count += 1
+                    ue.disconnection_timer = disconnection_timeout
+                else:
+                    ue.disconnection_timer -= time_step
+                    if ue.disconnection_timer <= 0:
+                        # Disconnect UE
+                        ue.disconnection_timer = 0
+                        ue.is_dropped = True  # FIX: Mark as dropped
+                        ue.serving_cell = None
+                        ue.rsrp = ue.rsrq = ue.sinr = np.nan
+                        ue.session_active = False
+                        ue.traffic_demand = 0
+                        ue.drop_count += 1
             else:
-                ue.disconnection_timer = disconnection_timeout
+                # Signal good - reset timer
+                ue.disconnection_timer = 0
         
-        else:
-            best_cell = _find_best_cell_for_connection(ue, sim_params.rsrpServingThreshold + hysteresis, cells)
+        else:  # UE not connected - try to connect
+            best_cell = _find_best_cell_for_connection(
+                ue, sim_params.rsrpServingThreshold + hysteresis, cells
+            )
+            
             if best_cell:
-                ue.connection_timer = max(0, ue.connection_timer - time_step)
+                # FIX: MATLAB-style timer logic
                 if ue.connection_timer == 0:
-                    current_best = _find_best_cell_for_connection(ue, sim_params.rsrpServingThreshold + hysteresis, cells)
-                    if current_best and current_best['cell_id'] == best_cell['cell_id']:
-                        ue.serving_cell = best_cell['cell_id']
-                        ue.rsrp, ue.rsrq, ue.sinr = best_cell['rsrp'], best_cell['rsrq'], best_cell['sinr']
+                    ue.connection_timer = connection_timeout
+                else:
+                    ue.connection_timer -= time_step
+                    if ue.connection_timer <= 0:
+                        ue.connection_timer = 0
+                        # Verify still best cell
+                        current_best = _find_best_cell_for_connection(
+                            ue, sim_params.rsrpServingThreshold + hysteresis, cells
+                        )
+                        if current_best and current_best['cell_id'] == best_cell['cell_id']:
+                            # Connect UE
+                            ue.serving_cell = best_cell['cell_id']
+                            ue.rsrp = best_cell['rsrp']
+                            ue.rsrq = best_cell['rsrq']
+                            ue.sinr = best_cell['sinr']
+                            ue.is_dropped = False  # FIX: Clear dropped flag
             else:
-                ue.connection_timer = connection_timeout
+                # No suitable cell - reset timer
+                ue.connection_timer = 0
+    
     return ues
 
 
@@ -375,10 +432,14 @@ def update_traffic_generation(ues: List[UE], cells: List[Cell],
     """Generate Poisson traffic for UEs"""
     lambda_val = sim_params.trafficLambda * sim_params.peakHourMultiplier
     
-    for cell in cells: cell.current_load = 0; cell.connected_ues = []
+    # Reset cell loads
+    for cell in cells:
+        cell.current_load = 0
+        cell.connected_ues = []
     
+    # Generate traffic for each UE
     for ue in ues:
-        if ue.serving_cell is not None:
+        if ue.serving_cell is not None and not ue.is_dropped:  # FIX: Check is_dropped
             traffic_demand = float(np.random.poisson(lambda_val / len(ues)))
             ue.traffic_demand = traffic_demand
             ue.session_active = traffic_demand > 0
@@ -388,8 +449,10 @@ def update_traffic_generation(ues: List[UE], cells: List[Cell],
                 serving_cell.current_load += traffic_demand
                 serving_cell.connected_ues.append(ue.id)
         else:
+            # FIX: Ensure disconnected/dropped UEs have no traffic
             ue.traffic_demand = 0
             ue.session_active = False
+    
     return ues, cells
 
 
@@ -407,14 +470,21 @@ def update_ue_drop_events(ues: List[UE], cells: List[Cell], current_time: float)
                 if np.random.random() < drop_prob:
                     serving_cell.actual_drop_count = getattr(serving_cell, 'actual_drop_count', 0) + 1
                     serving_cell.total_drop_events = getattr(serving_cell, 'total_drop_events', 0) + 1
+                    
+                    # FIX: Set is_dropped flag
+                    ue.is_dropped = True
                     ue.serving_cell = None
                     ue.rsrp = ue.rsrq = ue.sinr = np.nan
-                    ue.session_active = False; ue.traffic_demand = 0
+                    ue.session_active = False
+                    ue.traffic_demand = 0
                     ue.drop_count += 1
             else:
+                # FIX: Set is_dropped when cell not found
+                ue.is_dropped = True
                 ue.serving_cell = None
                 ue.rsrp = ue.rsrq = ue.sinr = np.nan
-                ue.session_active = False; ue.traffic_demand = 0
+                ue.session_active = False
+                ue.traffic_demand = 0
                 ue.drop_count += 1
     return ues, cells
 
