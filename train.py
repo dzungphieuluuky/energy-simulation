@@ -105,50 +105,20 @@ class TrainingPipeline:
     
     def create_environment(self, env_config: Dict[str, Any], seed: int, name_env: str = "gated") -> Callable:
         """Create environment factory function."""
-        def _make_strict_constraint_env() -> gym.Env:
+        create_environment_from_name = {
+            "her": SimplifiedHERForPPO,
+            "gated": GatedRewardWrapper,
+            "strict": StrictConstraintWrapper,
+            "lagrange": LagrangianRewardWrapper,
+            "cost_lagrange": LagrangianCostWrapper
+        }
+        def _make_env() -> gym.Env:
             base_env = FiveGEnv(env_config, self.config.max_cells)
-            wrapped_env = StrictConstraintWrapper(base_env)
+            wrapped_env = create_environment_from_name.get(name_env, lambda x: x)(base_env)
             monitored_env = Monitor(wrapped_env)
             return monitored_env
-        def _make_her_env():
-            base_env = FiveGEnv(env_config, self.config.max_cells)
-            simple_her_env = SimplifiedHERForPPO(base_env)
-            monitored_env = Monitor(simple_her_env)
-            return monitored_env
-        def _make_gated_env():
-            base_env = FiveGEnv(env_config, self.config.max_cells)
-            lagrangian_env = GatedRewardWrapper(base_env)
-            monitored_env = Monitor(lagrangian_env)
-            return monitored_env
-        def make_lagrange_env():
-            base_env = FiveGEnv(env_config, self.config.max_cells)
-            lagrangian_env = LagrangianRewardWrapper(base_env)
-            monitored_env = Monitor(lagrangian_env)
-            return monitored_env
-        def make_cost_lagrange_env():
-            base_env = FiveGEnv(env_config, self.config.max_cells)
-            cost_lagrangian_env = LagrangianCostWrapper(base_env,
-                                                        constraint_thresholds={
-                                                            'avg_drop_rate': 1.0,
-                                                            'avg_latency': 50.0,
-                                                            'cpu_violations': 0.0,
-                                                            'prb_violations': 0.0
-                                                        })
-            monitored_env = Monitor(cost_lagrangian_env)
-            return monitored_env
-        
-        # Return appropriate environment factory
-        if name_env == "her":
-            return _make_her_env
-        elif name_env == "gated":
-            return _make_gated_env
-        elif name_env == "strict":
-            return _make_strict_constraint_env
-        elif name_env == "lagrange":
-            return make_lagrange_env
-        elif name_env == "cost_lagrange":
-            return make_cost_lagrange_env
-
+        return _make_env
+    
     def train(self, algorithm: str, total_timesteps: int, n_envs: int = 4, name_env: str = "default") -> BaseAlgorithm:
         """Execute the complete training pipeline."""
         print(f"🚀 Starting enhanced training with {algorithm.upper()}")
@@ -237,24 +207,6 @@ class TrainingPipeline:
                 eval_freq=10000,
             ),
             ConstraintMonitorCallback(verbose=1),
-            ClaudeAdamLambdaUpdateCallback(
-                constraint_keys=['avg_drop_rate', 'avg_latency', 'cpu_violations', 'prb_violations'],
-                constraint_thresholds={
-                    'avg_drop_rate': 1.0,
-                    'avg_latency': 50.0,
-                    'cpu_violations': 0.0,
-                    'prb_violations': 0.0
-                },
-                initial_lambda_value=10.0,
-                lambda_lr=0.01,
-                max_lambda=100.0,
-                update_freq=1000,
-                gradient_clip=5.0,
-                use_warmup=True,
-                warmup_steps=10000,
-                lr_decay=True,
-                verbose=1
-            )
         ]
         return callbacks
     
