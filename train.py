@@ -30,7 +30,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 
 # Custom components
 from fiveg_env import FiveGEnv
-from custom_models_sb3 import EnhancedAttentionNetwork
+from custom_models_sb3 import *
 from callback import *
 from wrapper import *
 from initial import *
@@ -39,15 +39,17 @@ LAGRANGE_LR = 0.005
 
 @dataclass
 class TrainingConfig:
-    """Centralized configuration for training parameters."""
     max_cells: int = 57
-    state_dim_per_cell: int = 25
+    state_dim_per_cell: int = 12
     constraint_keys: List[str] = None
     device: torch.device = None
     
+    # SAC-specific
+    use_her: bool = False  # HER is for PPO, not SAC
+    
     def __post_init__(self):
         if self.constraint_keys is None:
-            self.constraint_keys=['avg_drop_rate', 'avg_latency', 'cpu_violations', 'prb_violations']
+            self.constraint_keys = ['avg_drop_rate', 'avg_latency', 'cpu_violations', 'prb_violations']
         if self.device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -72,7 +74,8 @@ class TrainingPipeline:
                     'max_cells': self.config.max_cells,
                     'n_cell_features': self.config.state_dim_per_cell,
                 },
-                'net_arch': dict(pi=[256, 256], qf=[256, 256], vf=[256, 256])
+                'net_arch': dict(pi=[256, 256], qf=[256, 256], vf=[256, 256]),
+                'share_features_extractor': True
             },
             'device': self.config.device,
             'tensorboard_log': "enhanced_logs/",
@@ -93,16 +96,28 @@ class TrainingPipeline:
                 'max_grad_norm': 0.5,
                 'target_kl': 0.03
             },
+            # In your _setup_hyperparameters function
             'sac': {
                 'learning_rate': 3e-4,
-                'buffer_size': 1000000,
+                'buffer_size': 100000,       # Reduced
                 'batch_size': 256,
-                'tau': 0.005,
+                'ent_coef': 'auto',
                 'gamma': 0.99,
-                'ent_coef': 'auto'
+                'tau': 0.005,
+                'gradient_steps': 1,
+                'learning_starts': 10000,    # Reduced
+                'train_freq': 1,             # Update every step
+                'policy_kwargs': {
+                    'features_extractor_class': EnhancedAttentionNetwork,
+                    'features_extractor_kwargs': {
+                        'features_dim': 256,
+                        'max_cells': self.config.max_cells,
+                        'n_cell_features': self.config.state_dim_per_cell,
+                    },
+                    'net_arch': dict(pi=[256, 256], qf=[256, 256]),
+                }
             }
         }
-        
         return {algo: {**base_params, **params} for algo, params in algorithm_params.items()}
     
     def create_environment(self, env_config: Dict[str, Any], seed: int, name_env: str = "gated") -> Callable:
@@ -112,15 +127,27 @@ class TrainingPipeline:
             "gated": GatedRewardWrapper,
             "strict": StrictConstraintWrapper,
             "lagrange": LagrangianRewardWrapper,
-            "cost_lagrange": LagrangianCostWrapper
+            "cost_lagrange": lambda env: LagrangianCostWrapper(
+                env, 
+                constraint_thresholds={
+                    'avg_drop_rate': self.config.constraint_keys.get('avg_drop_rate', 1.0),
+                    'avg_latency': 50.0,
+                    'cpu_violations': 0.0,  # Violation count, not usage
+                    'prb_violations': 0.0
+                }
+            )
         }
+        
         def _make_env() -> gym.Env:
             base_env = FiveGEnv(env_config, self.config.max_cells)
             wrapper_class = create_environment_from_name.get(name_env)
             if wrapper_class:
-                wrapped_env = wrapper_class(base_env)
+                if callable(wrapper_class):
+                    wrapped_env = wrapper_class(base_env)
+                else:
+                    wrapped_env = wrapper_class  # Lambda case
             else:
-                wrapped_env = base_env # Default to base if name not found
+                wrapped_env = base_env
             monitored_env = Monitor(wrapped_env)
             return monitored_env
         return _make_env
@@ -138,7 +165,7 @@ class TrainingPipeline:
         self.logger.info(f"Creating {n_envs} parallel environments.")
         self.logger.info(f"Using {name_env.upper()} environment wrapper.")
         subproc_vec_env = SubprocVecEnv(env_factories)
-        vec_env = VecNormalize(subproc_vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+        vec_env = VecNormalize(subproc_vec_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
         self.logger.info(f"Normalized observation: {vec_env.norm_obs}")
         self.logger.info(f"Normalized reward: {vec_env.norm_reward}")
         
@@ -146,23 +173,23 @@ class TrainingPipeline:
 
         # --- CHANGE 2: Added logic to load a model or create a new one ---
         if load_model_path:
-            self.logger.info(f"💾 Loading pre-trained model from: {load_model_path}")
+            self.logger.info(f"Loading pre-trained model from: {load_model_path}")
             model = model_class.load(load_model_path, env=vec_env)
             
             stats_path = load_model_path.replace(".zip", "_vecnormalize.pkl")
             if os.path.exists(stats_path):
-                self.logger.info(f"📊 Loading VecNormalize stats from: {stats_path}")
+                self.logger.info(f"Loading VecNormalize stats from: {stats_path}")
                 vec_env = VecNormalize.load(stats_path, vec_env)
                 vec_env.training = True
             else:
-                self.logger.warning(f"⚠️ VecNormalize stats not found at {stats_path}. Model may underperform.")
+                self.logger.warning(f"VecNormalize stats not found at {stats_path}. Model may underperform.")
         else:
-            self.logger.info("🤖 Creating a new model from scratch.")
+            self.logger.info("Creating a new model from scratch.")
             model = model_class("MlpPolicy", vec_env, **self.hyperparameters[algorithm])
             
             print("\n" + "="*50)
             print("Applying custom policy initialization...")
-            bias_policy_output(model, bias_value=1.3)
+            bias_policy_output(model, target_action=0.9)
             print("="*50 + "\n")
 
         self.model = model
@@ -207,9 +234,9 @@ class TrainingPipeline:
                     with open(os.path.join(scenario_folder, filename), 'r') as f:
                         scenario = json.load(f)
                         scenarios.append(scenario)
-                        print(f"📁 Loaded scenario: {scenario.get('name', filename)}")
+                        print(f"Loaded scenario: {scenario.get('name', filename)}")
         except FileNotFoundError:
-            print(f"⚠️  Scenario folder '{scenario_folder}' not found, using default")
+            print(f"Scenario folder '{scenario_folder}' not found, using default")
             scenarios = [{'name': 'default', 'numUEs': 50, 'numSites': 3}]
         return scenarios
     
@@ -251,11 +278,11 @@ class TrainingPipeline:
         os.makedirs("trained_models/", exist_ok=True)
         model_path = f"trained_models/{algorithm}_final_{timestamp}.zip"
         model.save(model_path)
-        print(f"💾 Model saved to: {model_path}")
+        print(f"Model saved to: {model_path}")
 
         stats_path = model_path.replace(".zip", "_vecnormalize.pkl")
         vec_env.save(stats_path)
-        print(f"📊 VecNormalize stats saved to: {stats_path}")
+        print(f"VecNormalize stats saved to: {stats_path}")
 
     def setup_logging(self, log_file):
         # ... (function is the same)

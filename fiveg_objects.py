@@ -1,4 +1,3 @@
-# fiveg_objects.py
 import numpy as np
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
@@ -33,7 +32,9 @@ class HandoverEvent:
 # --- Core Simulation Objects ---
 
 class UE:
-    """Represents a User Equipment in the simulation. Attributes are a 1:1 match with the MATLAB struct."""
+    """
+    Represents a User Equipment. Attributes are a 1:1 match with the MATLAB UE struct.
+    """
     def __init__(self, **params: Dict[str, Any]):
         # Core Properties
         self.id: int = int(params['id'])
@@ -49,7 +50,6 @@ class UE:
         self.rsrp: float = np.nan
         self.rsrq: float = np.nan
         self.sinr: float = np.nan
-        self.throughput: float = 0.0
         self.neighbor_measurements: List[NeighborMeasurement] = []
 
         # Traffic & QoS State
@@ -57,6 +57,7 @@ class UE:
         self.is_dropped: bool = False
         self.drop_count: int = 0
         self.session_active: bool = False
+        self.qos_latency: float = 0.0 # From MATLAB createUEStruct
         
         # Handover State
         self.ho_timer: float = 0.0
@@ -72,12 +73,13 @@ class UE:
         self.step_counter: int = 0
         self.last_direction_change: float = 0.0
 
-        # Scenario-specific attributes
+        # Scenario-specific attributes for high-speed train
         self.in_train: bool = params.get('in_train', False)
         self.track_length: float = params.get('track_length', 0.0)
         self.train_start_x: float = params.get('train_start_x', 0.0)
         self.position_in_train: float = params.get('position_in_train', 0.0)
         
+        # Scenario-specific attributes for highway
         self.on_highway: bool = params.get('on_highway', False)
         self.highway_length: float = params.get('highway_length', 0.0)
         self.num_lanes: int = params.get('num_lanes', 3)
@@ -86,7 +88,9 @@ class UE:
         self.is_forward: bool = params.get('is_forward', True)
 
 class Cell:
-    """Represents a network cell in the simulation. Attributes are a 1:1 match with the MATLAB struct."""
+    """
+    Represents a network cell. Attributes are a 1:1 match with the MATLAB Cell struct.
+    """
     def __init__(self, **params: Dict[str, Any]):
         # Core Properties
         self.id: int = int(params['id'])
@@ -113,24 +117,23 @@ class Cell:
         # Capacity & Load
         self.max_capacity: float = float(params.get('max_capacity', 250.0))
         self.current_load: float = 0.0
+        self.cell_radius: float = float(params.get('cell_radius', 200.0))
         
         # Handover Parameters
-        self.ttt: float = float(params.get('ttt', 0.1)) # Time To Trigger in seconds
-        self.a3_offset: float = float(params.get('a3_offset', 3.0)) # A3 Handover Offset in dB
+        self.ttt: float = float(params.get('ttt', 0.008)) # Time To Trigger (seconds)
+        self.a3_offset: float = float(params.get('a3_offset', 3.0)) # A3 Handover Offset (dB)
 
         # Dynamic Metrics
         self.cpu_usage: float = 0.0
         self.prb_usage: float = 0.0
-        self.avg_latency: float = 0.0
+        self.avg_latency: float = 10.0
         self.connected_ues: List[int] = []
         self.avg_sinr: float = 0.0
 
-        # QoS Tracking
-        self.droppedUEs: int = 0
-        self.totalUEsServed: int = 0
+        # QoS Tracking (matches MATLAB struct)
         self.actual_drop_count: int = 0
-        self.total_connection_time: int = 0
         self.total_drop_events: int = 0
+        self.total_connection_time: int = 0
         self.theoretical_drop_rate: float = 0.0
         self.drop_rate: float = 0.0
 
@@ -156,7 +159,7 @@ class SimulationParams:
     isd: float = 200.0
     antennaHeight: float = 25.0
     cellRadius: float = 200.0
-    max_radius: float = 500.0 # Used for UE placement, not in JSON
+    max_radius: float = 500.0
     
     # RF Parameters
     carrierFrequency: float = 3.5e9
@@ -169,14 +172,12 @@ class SimulationParams:
     indoorRatio: float = 0.8
     outdoorSpeed: float = 30.0
     
-    # High-Speed Scenario
+    # Scenario Specific
     trainLength: float = 200.0
     trackLength: float = 10000.0
-    
-    # Highway Scenario
-    highway_length: float = 10000.0 # Internal name
-    num_lanes: int = 3 # Internal name
-    lane_width: float = 3.5 # Internal name
+    highway_length: float = 10000.0
+    num_lanes: int = 3
+    lane_width: float = 3.5
     
     # Power Parameters
     minTxPower: float = 30.0

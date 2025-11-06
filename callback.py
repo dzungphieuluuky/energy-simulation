@@ -645,7 +645,7 @@ class MetricsLoggerCallback(BaseCallback):
                 self.recent_compliance.append(float(is_compliant))
 
         # At the end of a rollout, log the averaged metrics
-        if self.n_calls % self.model.n_steps == 0:
+        if self.n_calls % 5000 == 0:
             if self.recent_compliance:
                 mean_compliance_rate = np.mean(self.recent_compliance) * 100
                 mean_violations = np.mean(self.recent_kpi_violations)
