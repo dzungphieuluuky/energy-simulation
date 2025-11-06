@@ -98,14 +98,14 @@ class TrainingPipeline:
             },
             # In your _setup_hyperparameters function
             'sac': {
-                'learning_rate': 3e-4,
-                'buffer_size': 100000,       # Reduced
+                'learning_rate': 5e-5,
+                'buffer_size': 300000,       # Reduced
                 'batch_size': 256,
                 'ent_coef': 'auto',
                 'gamma': 0.99,
                 'tau': 0.005,
                 'gradient_steps': 1,
-                'learning_starts': 10000,    # Reduced
+                'learning_starts': 20000,    # Reduced
                 'train_freq': 1,             # Update every step
                 'policy_kwargs': {
                     'features_extractor_class': EnhancedAttentionNetwork,
