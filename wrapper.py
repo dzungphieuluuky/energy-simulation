@@ -1,8 +1,146 @@
 import gymnasium as gym
+from gymnasium import spaces, Env
 import numpy as np
 from collections import deque
 from typing import List, Dict, Any, Tuple, Optional
 from fiveg_env import FiveGEnv
+
+import numpy as np
+
+class StateNormalizer:
+    """Handles state normalization with running statistics"""
+    
+    def __init__(self, state_dim, epsilon=1e-8, n_cells=10):
+        self.state_dim = state_dim
+        self.epsilon = epsilon
+        self.n_cells = n_cells
+
+        # Simulation features normalization bounds (first 17 features)
+        self.simulation_bounds = {
+            'totalCells': [1, 50],               # number of cells
+            'totalUEs': [1, 500],                # number of UEs
+            'simTime': [600, 3600],              # simulation time
+            'timeStep': [1, 10],                 # time step
+            'timeProgress': [0, 1],              # progress ratio
+            'carrierFrequency': [700e6, 6e9],    # frequency Hz
+            'isd': [100, 2000],                  # inter-site distance
+            'minTxPower': [0, 46],               # dBm
+            'maxTxPower': [0, 46],              # dBm
+            'basePower': [100, 100000],            # watts
+            'idlePower': [50, 50000],              # watts
+            'dropCallThreshold': [1, 10],        # percentage
+            'latencyThreshold': [10, 100],       # ms
+            'cpuThreshold': [70, 95],            # percentage
+            'prbThreshold': [70, 95],            # percentage
+            'trafficLambda': [0.1, 10],          # traffic rate
+            'peakHourMultiplier': [1, 5]         # multiplier
+        }
+        
+        # Network features normalization bounds (next 14 features)
+        self.network_bounds = {
+            'totalEnergy': [0, 10000],           # kWh
+            'activeCells': [0, 50],              # number of cells
+            'avgDropRate': [0, 20],              # percentage
+            'avgLatency': [0, 200],              # ms
+            'totalTraffic': [0, 5000],           # traffic units
+            'connectedUEs': [0, 500],            # number of UEs
+            'connectionRate': [0, 100],         # percentage
+            'cpuViolations': [0, 10000],            # number of violations
+            'prbViolations': [0, 10000],            # number of violations
+            'maxCpuUsage': [0, 100],             # percentage
+            'maxPrbUsage': [0, 100],             # percentage
+            'kpiViolations': [0, 10000],          # number of violations
+            'totalTxPower': [0, 1000],           # total power
+            'avgPowerRatio': [0, 1]              # ratio
+        }
+        
+        # Cell features normalization bounds (12 features per cell)
+        self.cell_bounds = {
+            'cpuUsage': [0, 100],                # percentage
+            'prbUsage': [0, 100],                # percentage
+            'currentLoad': [0, 1000],            # load units
+            'maxCapacity': [0, 1000],            # capacity units
+            'numConnectedUEs': [0, 50],          # number of UEs
+            'txPower': [0, 46],                  # dBm
+            'energyConsumption': [0, 5000],      # watts
+            'avgRSRP': [-140, -70],              # dBm
+            'avgRSRQ': [-20, 0],                 # dB
+            'avgSINR': [-10, 30],                # dB
+            'totalTrafficDemand': [0, 500],      # traffic units
+            'loadRatio': [0, 1]                  # ratio
+        }
+    
+    def normalize(self, state_vector):
+        """
+        Normalize state vector to [0, 1] range
+        
+        State structure:
+        [sim_1, ..., sim_17,              # Index 0-16 (17 features)
+         net_1, ..., net_14,              # Index 17-30 (14 features)
+         c1_f1, c2_f1, ..., cn_f1,       # cpuUsage for all cells
+         c1_f2, c2_f2, ..., cn_f2,       # prbUsage for all cells
+         ...                              # etc for all 12 cell features
+         c1_f12, c2_f12, ..., cn_f12]    # loadRatio for all cells
+        """
+        normalized = np.zeros_like(state_vector)
+        
+        # Normalize simulation features (indices 0-16)
+        simulation_keys = list(self.simulation_bounds.keys())
+        for i, key in enumerate(simulation_keys):
+            if i < len(state_vector):
+                min_val, max_val = self.simulation_bounds[key]
+                normalized[i] = self._normalize_value(state_vector[i], min_val, max_val)
+        
+        # Normalize network features (indices 17-30)
+        network_keys = list(self.network_bounds.keys())
+        for i, key in enumerate(network_keys):
+            global_idx = 17 + i
+            if global_idx < len(state_vector):
+                min_val, max_val = self.network_bounds[key]
+                normalized[global_idx] = self._normalize_value(state_vector[global_idx], min_val, max_val)
+        
+        # Normalize cell features (indices 31 onwards)
+        cell_keys = list(self.cell_bounds.keys())
+        start_idx = 31  # After simulation (17) and network (14) features
+        
+        for feat_idx, key in enumerate(cell_keys):
+            min_val, max_val = self.cell_bounds[key]
+            
+            # Normalize all cells for this feature
+            for cell_idx in range(self.n_cells):
+                global_idx = start_idx + feat_idx * self.n_cells + cell_idx
+                if global_idx < len(state_vector):
+                    normalized[global_idx] = self._normalize_value(
+                        state_vector[global_idx], min_val, max_val)
+        
+        return normalized
+    
+    def _normalize_value(self, value, min_val, max_val):
+        """Normalize single value to [0, 1] range"""
+        if max_val == min_val:
+            return 0.5  # Default middle value
+        return np.clip((value - min_val) / (max_val - min_val), 0.0, 1.0)
+    
+    def update_stats(self, state_vector):
+        pass
+
+class StateNormalizerWrapper(gym.ObservationWrapper):
+    """
+    Applies the competition's mandatory StateNormalizer to each observation.
+    This ensures the agent is trained on the exact state representation
+    it will encounter during inference.
+    """
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        # Access max_cells from the unwrapped base environment for robustness
+        n_cells = self.env.unwrapped.max_cells 
+        self.normalizer = StateNormalizer(state_dim=self.observation_space.shape[0], n_cells=n_cells)
+        self.observation_space = spaces.Box(
+            low=0.0, high=1.0, shape=self.observation_space.shape, dtype=np.float32
+        )
+
+    def observation(self, obs: np.ndarray) -> np.ndarray:
+        return self.normalizer.normalize(obs)
 
 class LagrangianRewardWrapper(gym.Wrapper):
     """
@@ -88,7 +226,6 @@ class LagrangianRewardWrapper(gym.Wrapper):
             if key in self.lambdas:
                 self.lambdas[key] = value
 
-#----------------CLAUDE----------------#
 class LagrangianCostWrapper(gym.Wrapper):
     """
     Wrapper that computes Lagrangian costs and adds them to info dict.
@@ -108,47 +245,57 @@ class LagrangianCostWrapper(gym.Wrapper):
     
     def step(self, action):
         """Execute step and compute Lagrangian costs."""
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, _, terminated, truncated, info = self.env.step(action)
         
-        # Compute costs for each constraint
-        lagrangian_costs = {}
-        
-        # Get metrics (assumes env.compute_metrics() exists or metrics in info)
-        if hasattr(self.env, 'compute_metrics'):
-            metrics = self.env.compute_metrics()
-        else:
-            metrics = info
+        # Add a primal reward for the main objective (energy saving)
+        primal_reward = self._compute_energy_reward(info)
         
         # Compute violation costs
-        for key, threshold in self.constraint_thresholds.items():
-            if key in metrics:
-                metric_value = metrics[key]
-                # Cost = max(0, metric - threshold)
-                cost = max(0.0, metric_value - threshold)
-                lagrangian_costs[key] = cost
+        lagrangian_costs = self._compute_costs(info)
         
-        # Add to info
+        # Add to info for the callback
         info['lagrangian_costs'] = lagrangian_costs
         
-        # Optionally modify reward with Lagrangian penalty
-        # reward = reward - sum(lambda * cost)
         lagrangian_penalty = sum(
             self.current_lambdas.get(key, 0.0) * cost
             for key, cost in lagrangian_costs.items()
         )
         
         info['lagrangian_penalty'] = lagrangian_penalty
-        info['original_reward'] = reward
+        info['primal_reward'] = primal_reward
         
-        # Apply penalty to reward
-        reward = reward - lagrangian_penalty
+        reward = primal_reward - lagrangian_penalty
         
         return obs, reward, terminated, truncated, info
+
+    def _compute_energy_reward(self, metrics: Dict[str, Any]) -> float:
+        """Computes the primary objective: energy efficiency reward."""
+        p = self.env.unwrapped.sim_params
+        total_energy = metrics.get('total_energy', 0)
+        max_tx_power_watts = 10**((p.maxTxPower - 30) / 10)
+        max_possible_energy = self.env.unwrapped.n_cells * (p.basePower + max_tx_power_watts)
+        
+        if max_possible_energy > 0:
+            energy_saved_ratio = 1.0 - (total_energy / max_possible_energy)
+            return max(0.0, energy_saved_ratio)
+        return 0.0
+
+    def _compute_costs(self, metrics: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate the non-negative cost for each constraint violation."""
+        costs = {}
+        for key, threshold in self.constraint_thresholds.items():
+            if key in metrics:
+                metric_value = metrics[key]
+                cost = max(0.0, metric_value - threshold)
+                costs[key] = cost
+        return costs
     
     def update_lambdas(self, new_lambdas: Dict[str, float]):
         """Update lambda values (called by callback)."""
         self.current_lambdas.update(new_lambdas)
 
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
+        return self.env.reset(seed=seed, options=options)
 
 class StrictConstraintWrapper(gym.Wrapper):
     """
@@ -727,41 +874,49 @@ class SimplifiedHERForPPO(gym.Wrapper):
             print(f"{'='*70}\n")
 
 class GatedRewardWrapper(gym.Wrapper):
+    """
+    Provides a simple and effective reward signal for constraint satisfaction.
+    - Returns a positive reward for energy efficiency ONLY when all constraints are met.
+    - Returns a fixed negative penalty (-1.0) if ANY constraint is violated.
+    This gives the agent a very clear learning signal.
+    """
     def __init__(self, env: FiveGEnv):
         super().__init__(env)
-        self.sim_params = env.sim_params
-        self.n_cells = env.n_cells
+        # --- FINAL TUNING: Use .unwrapped for safety ---
+        self.sim_params = self.env.unwrapped.sim_params
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
-        
-        # The reward logic is now based on the metrics from the step
         metrics = info 
         
         is_compliant = self._check_constraints(metrics)
         
         if not is_compliant:
-            # A consistent, negative signal to tell the agent this state is bad.
-            # This provides a gradient to escape the violation state.
+            # A strong, consistent penalty for violating constraints.
             reward = -1.0
         else:
-            # Only if compliant, reward the agent for energy efficiency.
-            # The reward is the fraction of energy SAVED. Range [0, 1].
+            # A positive reward for energy saving, only available in compliant states.
             total_energy = metrics.get('total_energy', 0)
-            max_power = 10**((self.sim_params.maxTxPower - 30) / 10)
-            max_energy = self.n_cells * (self.sim_params.idlePower + max_power)
+            n_cells = self.env.unwrapped.n_cells
+            
+            # Use a realistic maximum energy consumption as the baseline for reward calculation.
+            max_power_watts = 10**((self.sim_params.maxTxPower - 30) / 10)
+            max_energy = n_cells * (self.sim_params.basePower + max_power_watts)
+            
             efficiency = 1.0 - (total_energy / max(1, max_energy))
             reward = max(0.0, efficiency)
 
         return obs, reward, terminated, truncated, info
 
     def _check_constraints(self, metrics: Dict[str, Any]) -> bool:
-        """Checks if all critical constraints are satisfied."""
+        """Checks if all critical performance and resource constraints are satisfied."""
         if metrics.get('avg_drop_rate', 100) > self.sim_params.dropCallThreshold: return False
         if metrics.get('avg_latency', 1000) > self.sim_params.latencyThreshold: return False
         if metrics.get('cpu_violations', 1) > 0: return False
         if metrics.get('prb_violations', 1) > 0: return False
-        # The contest description doesn't specify a connectivity constraint, 
-        # but it's good practice to keep one to prevent the agent from turning off all cells.
-        if metrics.get('connection_rate', 0) < 0.90: return False
+        if metrics.get('connection_rate', 0) < 90.0: return False # Ensure most UEs are connected
         return True
+
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
+        # This is the correct, compliant signature
+        return self.env.reset(seed=seed, options=options)

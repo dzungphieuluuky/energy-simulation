@@ -44,11 +44,12 @@ class FiveGEnv(gym.Env):
             if hasattr(self.sim_params, key): setattr(self.sim_params, key, value)
 
         self.max_cells = int(max_cells)
-        self.state_dim_per_cell = 12 # Exact feature count from MATLAB's convertStateToRL
+        self.state_dim_per_cell = 12 
         self.seed = int(env_config.get('seed', 42))
 
         self.action_space = spaces.Box(low=0.0, high=1.0, shape=(self.max_cells,), dtype=np.float32)
         state_dim = 17 + 14 + (self.max_cells * self.state_dim_per_cell)
+        # The observation space is defined with raw, unnormalized bounds.
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32)
         
         self.cells: List[Cell] = []
@@ -92,23 +93,31 @@ class FiveGEnv(gym.Env):
             metrics["total_tx_power"], metrics["avg_power_ratio"]
         ], dtype=np.float32)
 
+        # --- CRITICAL FIX: Reconstruct cell features to match StateNormalizer's expected interleaved format ---
+        # StateNormalizer expects: [c1_f1, c2_f1, ..., cn_f1, c1_f2, c2_f2, ..., cn_f2, ...]
+        # Previous implementation was: [c1_f1, c1_f2, ..., c2_f1, c2_f2, ...] (blocked)
+        
         # 3. Per-Cell Features (12 per cell)
-        cell_features = np.zeros(self.max_cells * self.state_dim_per_cell, dtype=np.float32)
-        ue_stats = self._get_ue_stats_by_cell()
+        cell_features_matrix = np.zeros((self.max_cells, self.state_dim_per_cell), dtype=np.float32)
+        ue_stats_by_cell = self._get_ue_stats_by_cell()
+
         for i, cell in enumerate(self.cells):
-            stats = ue_stats.get(cell.id, {'avg_rsrp': -140, 'avg_rsrq': -20, 'avg_sinr': -20, 'total_traffic': 0})
+            stats = ue_stats_by_cell.get(cell.id, {'avg_rsrp': -140, 'avg_rsrq': -20, 'avg_sinr': -20, 'total_traffic': 0})
             load_ratio = cell.current_load / max(1, cell.max_capacity)
             
-            # Feature order matches MATLAB's cellFeatures construction
-            cell_feats_list = [
+            # This order must match the `cell_bounds` dictionary in state_normalizer.py
+            cell_features_matrix[i, :] = [
                 cell.cpu_usage, cell.prb_usage, cell.current_load, cell.max_capacity,
                 float(len(cell.connected_ues)), cell.tx_power, cell.energy_consumption,
                 stats['avg_rsrp'], stats['avg_rsrq'], stats['avg_sinr'],
                 stats['total_traffic'], load_ratio
             ]
-            start_idx = i * self.state_dim_per_cell
-            cell_features[start_idx : start_idx + self.state_dim_per_cell] = cell_feats_list
-            
+
+        # Now, flatten the matrix in column-major order ('F' for Fortran-style)
+        # This interleaves the features correctly.
+        cell_features = cell_features_matrix.flatten(order='F')
+        
+        # The final observation vector
         obs = np.concatenate([sim_features, network_features, cell_features])
         obs[np.isnan(obs) | np.isinf(obs)] = 0 # Handle potential NaN/inf values
         return obs
@@ -167,7 +176,6 @@ class FiveGEnv(gym.Env):
         self.current_step = 0
         self._setup_scenario(self.seed)
         
-        # Initial simulation step to populate metrics before the first action
         self.ues, self.cells = run_simulation_step(self.ues, self.cells, self.sim_params, self.sim_params.timeStep, -1, self.seed)
         return self._get_obs(), {}
 
@@ -179,5 +187,4 @@ class FiveGEnv(gym.Env):
         self.current_step += 1
         terminated = self.current_step >= self.sim_params.total_steps
         
-        # Placeholder reward of 0.0. A wrapper should be used for reward shaping.
         return self._get_obs(), 0.0, terminated, False, metrics

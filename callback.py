@@ -43,9 +43,9 @@ class ConstraintMonitorCallback(BaseCallback):
                 print(f"  Avg Violations: {recent_violations:.2f}")
                 
                 if recent_compliance < 50:
-                    print("  ⚠️  WARNING: Low compliance rate! Agent struggling with constraints.")
+                    print("WARNING: Low compliance rate! Agent struggling with constraints.")
                 elif recent_compliance > 80:
-                    print("  ✅ Good compliance! Agent learning constraint satisfaction.")
+                    print("Good compliance! Agent learning constraint satisfaction.")
         
         return True
 
