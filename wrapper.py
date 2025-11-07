@@ -743,7 +743,7 @@ class GatedRewardWrapper(gym.Wrapper):
         if not is_compliant:
             # A consistent, negative signal to tell the agent this state is bad.
             # This provides a gradient to escape the violation state.
-            reward = -1.0 
+            reward = -1.0
         else:
             # Only if compliant, reward the agent for energy efficiency.
             # The reward is the fraction of energy SAVED. Range [0, 1].

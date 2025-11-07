@@ -68,7 +68,7 @@ class TrainingPipeline:
         """Setup algorithm-specific hyperparameters."""
         base_params = {
             'policy_kwargs': {
-                'features_extractor_class': EnhancedAttentionNetwork,
+                'features_extractor_class': LightweightAttentionNetwork,
                 'features_extractor_kwargs': {
                     'features_dim': 256,
                     'max_cells': self.config.max_cells,
@@ -98,24 +98,15 @@ class TrainingPipeline:
             },
             # In your _setup_hyperparameters function
             'sac': {
-                'learning_rate': 1e-5,
+                'learning_rate': 1e-6,
                 'buffer_size': 300000,       # Reduced
                 'batch_size': 512,
                 'ent_coef': 'auto',
                 'gamma': 0.99,
-                'tau': 0.01,
-                'gradient_steps': 16,
+                'tau': 0.005,
+                'gradient_steps': 64,
                 'learning_starts': 20000,    # Reduced
                 'train_freq': 1,             # Update every step
-                'policy_kwargs': {
-                    'features_extractor_class': EnhancedAttentionNetwork,
-                    'features_extractor_kwargs': {
-                        'features_dim': 256,
-                        'max_cells': self.config.max_cells,
-                        'n_cell_features': self.config.state_dim_per_cell,
-                    },
-                    'net_arch': dict(pi=[256, 256], qf=[256, 256]),
-                }
             }
         }
         return {algo: {**base_params, **params} for algo, params in algorithm_params.items()}
