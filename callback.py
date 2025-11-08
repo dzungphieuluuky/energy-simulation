@@ -6,49 +6,54 @@ import logging
 import torch
 
 class ConstraintMonitorCallback(BaseCallback):
-    """Enhanced monitoring with violation tracking and adaptive penalties."""
+    """
+    --- CORRECTED VERSION ---
+    Monitors constraint compliance using the reliable 'true_compliance_rate' 
+    metric from the environment's info dictionary.
+    """
     
     def __init__(self, verbose=0):
         super().__init__(verbose)
-        self.violation_history = []
-        self.compliance_history = []
-        self.episode_rewards = []
+        # This will store the true compliance percentage (0-100) for each episode
+        self.compliance_history = deque(maxlen=100)
+        self.violation_history = deque(maxlen=100) # Still useful to track
         
     def _on_step(self) -> bool:
-        # Check if episode just finished
-        if self.locals.get('dones', [False])[0]:
-            # Get final metrics from info
-            info = self.locals.get('infos', [{}])[0]
+        # Check if an episode just finished in any of the parallel environments
+        for i, done in enumerate(self.locals.get("dones", [])):
+            if done:
+                # Get final metrics from the info dictionary
+                info = self.locals.get('infos', [{}])[i]
             
-            # Track violations
-            kpi_violations = info.get('kpi_violations', 0)
-            self.violation_history.append(kpi_violations)
-            
-            # Track compliance
-            drop_ok = info.get('avg_drop_rate', 999) <= self.training_env.get_attr('sim_params')[0].dropCallThreshold
-            latency_ok = info.get('avg_latency', 999) <= self.training_env.get_attr('sim_params')[0].latencyThreshold
-            cpu_ok = info.get('cpu_violations', 999) == 0
-            prb_ok = info.get('prb_violations', 999) == 0
-            
-            all_ok = drop_ok and latency_ok and cpu_ok and prb_ok
-            self.compliance_history.append(all_ok)
-            
-            # Log every 10 episodes
-            if len(self.violation_history) % 10 == 0:
-                recent_compliance = np.mean(self.compliance_history[-10:]) * 100
-                recent_violations = np.mean(self.violation_history[-10:])
+                # --- CRITICAL CHANGE: Use the reliable metric ---
+                # Get the true, step-wise compliance rate for the entire episode.
+                # A fully compliant episode will have a rate of 100.0.
+                true_compliance_rate = info.get('true_compliance_rate', 0.0)
+
+                # Store the percentage directly
+                self.compliance_history.append(true_compliance_rate)
                 
-                print(f"\n[Step {self.num_timesteps}] Last 10 Episodes:")
-                print(f"  Compliance Rate: {recent_compliance:.1f}%")
-                print(f"  Avg Violations: {recent_violations:.2f}")
-                
-                if recent_compliance < 50:
-                    print("WARNING: Low compliance rate! Agent struggling with constraints.")
-                elif recent_compliance > 80:
-                    print("Good compliance! Agent learning constraint satisfaction.")
+                # We can still track violations for more detailed logging
+                kpi_violations = info.get('kpi_violations', 0)
+                self.violation_history.append(kpi_violations)
+            
+                # Log every 10 episodes
+                if len(self.compliance_history) > 0 and self.n_calls % (self.update_freq * 10) == 0:
+                    # The mean of the history is now the true average compliance rate
+                    recent_compliance_avg = np.mean(self.compliance_history)
+                    recent_violations_avg = np.mean(self.violation_history)
+                    
+                    print(f"\n[ConstraintMonitor] Last {len(self.compliance_history)} Episodes (at Step {self.num_timesteps}):")
+                    print(f"  Avg Step-wise Compliance Rate: {recent_compliance_avg:.1f}%")
+                    print(f"  Avg End-of-Ep Violations: {recent_violations_avg:.2f}")
+                    
+                    if recent_compliance_avg < 10.0:
+                        print("WARNING: Low compliance rate! Agent is struggling to meet constraints.")
+                    elif recent_compliance_avg > 80.0:
+                        print("Good compliance! Agent is learning constraint satisfaction.")
         
         return True
-
+    
 class AlgorithmComparisonCallback(BaseCallback):
     """Callback to track training progress and compare algorithm performance."""
     def __init__(self, verbose=0):
@@ -619,12 +624,16 @@ class MetricsLoggerCallback(BaseCallback):
     """
     A callback to log custom environment metrics at the end of each episode.
     This is the correct way to get detailed performance data into your logs.
+    
+    --- MODIFIED to use true_compliance_rate from the environment info dict ---
     """
-    def __init__(self, verbose: int = 0, logger = None):
+    def __init__(self, verbose: int = 0): # Removed logger argument, SB3 injects it.
         super().__init__(verbose)
         # Use deques to store metrics from recent episodes for averaging
         self.recent_kpi_violations = deque(maxlen=100)
-        self.recent_compliance = deque(maxlen=100)
+        
+        # This deque will now store the TRUE compliance percentages (e.g., 85.5, 12.0, 100.0)
+        self.recent_compliance_rates = deque(maxlen=100)
 
     def _on_step(self) -> bool:
         # Check for episode ends in any of the parallel environments
@@ -635,28 +644,42 @@ class MetricsLoggerCallback(BaseCallback):
                 
                 # --- Record custom metrics using self.logger.record() ---
                 # This is the SB3-idiomatic way to log.
-                self.logger.record('custom/kpi_violations', info.get('kpi_violations', 0))
                 
-                is_compliant = info.get('kpi_violations', 1) == 0
-                self.logger.record('custom/is_compliant', float(is_compliant))
+                # (Optional but good) Keep logging the violations at the end of the episode
+                # self.logger.record('custom/kpi_violations_end_of_ep', info.get('kpi_violations', 0))
+                # self.recent_kpi_violations.append(info.get('kpi_violations', 0))
                 
-                # Store for multi-episode averaging
-                self.recent_kpi_violations.append(info.get('kpi_violations', 0))
-                self.recent_compliance.append(float(is_compliant))
+                # --- CHANGE 1: Use the new 'true_compliance_rate' from the wrapper ---
+                # This is the accurate, step-wise compliance percentage for the whole episode.
+                # We default to 0.0 if the key is somehow missing.
+                true_compliance_rate = info.get('true_compliance_rate', 0.0)
+                
+                # Log the compliance rate for this specific episode to TensorBoard
+                self.logger.record('custom/ep_compliance_rate', true_compliance_rate)
+                
+                # Store the accurate rate for multi-episode averaging
+                self.recent_compliance_rates.append(true_compliance_rate)
 
         # At the end of a rollout, log the averaged metrics
         if self.n_calls % 5000 == 0:
-            if self.recent_compliance:
-                mean_compliance_rate = np.mean(self.recent_compliance) * 100
-                mean_violations = np.mean(self.recent_kpi_violations)
-                self.logger.record('custom/mean_compliance_rate', mean_compliance_rate)
-                self.logger.record('custom/mean_violations', mean_violations)
+            if self.recent_compliance_rates:
+                # --- CHANGE 2: Calculate the mean directly ---
+                # The deque now holds percentages, so we just need the mean. No more * 100.
+                mean_compliance_rate = np.mean(self.recent_compliance_rates)
+                
+                # mean_violations = np.mean(self.recent_kpi_violations)
+                
+                # Log the reliable, averaged metrics to TensorBoard
+                self.logger.record('custom/mean_true_compliance_rate', mean_compliance_rate)
+                # self.logger.record('custom/mean_end_of_ep_violations', mean_violations)
+                
                 if self.verbose > 0:
-                    self.logger.info(f"\n[MetricsLogger] Last {len(self.recent_compliance)} episodes: "
-                          f"Compliance Rate={mean_compliance_rate:.1f}%, Avg Violations={mean_violations:.2f}")
+                    # The printout now reflects the true average compliance across all recent steps
+                    self.logger.info(f"\n[MetricsLogger] Last {len(self.recent_compliance_rates)} episodes: "
+                          f"Avg Step-wise Compliance Rate={mean_compliance_rate:.1f}%")
 
         return True
-
+    
 class CurriculumLearningCallback(BaseCallback):
     """
     Callback for automatic curriculum learning - advances training stages
